@@ -64,7 +64,7 @@ class MatchSim {
   /// 시뮬레이션 틱 간격 (초) — 10 tick/s
   static const double dt = 0.1;
 
-  static const double playerSpeed = 4.0;
+  static const double playerSpeed = 2.8;
   static const double passSpeed = 7.0;
   static const double shotSpeed = 6.0;
   static const double shootRange = 6.8;
