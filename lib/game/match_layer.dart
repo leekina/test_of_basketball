@@ -62,32 +62,44 @@ class MatchLayer extends Component {
     _applyInterpolated(alpha);
   }
 
-  /// 이벤트 연출: 슛이 뜨면 슈터와 최근접 수비수가 점프 (점프샷/컨테스트)
+  /// 이벤트 연출: 슛/레이업 릴리즈 시 슈터 점프 (블락 점프는 시뮬 상태 기반)
   void _reactToEvent() {
     final e = sim.lastEvent;
-    if (e == null || !e.startsWith('shot')) {
+    if (e == null || !(e.startsWith('shot') || e.startsWith('layup'))) {
       return;
     }
     final shooterId = sim.lastShooterId;
-    if (shooterId == null) {
-      return;
+    if (shooterId != null) {
+      _playerComps[shooterId].jump();
     }
-    final shooter = sim.players[shooterId];
-    _playerComps[shooterId].jump();
-    SimPlayer? contester;
-    var best = double.infinity;
-    for (final d in sim.players) {
-      if (d.team == shooter.team) {
-        continue;
-      }
-      final dist = d.pos.distanceTo(shooter.pos);
-      if (dist < best) {
-        best = dist;
-        contester = d;
-      }
-    }
-    if (contester != null && best < 2.5) {
-      _playerComps[contester.id].jump();
+  }
+
+  /// 발밑 상태 라벨 (한국어)
+  String _labelFor(SimPlayer p) {
+    switch (p.state) {
+      case PlayerState.dribbling:
+        return '드리블';
+      case PlayerState.windup:
+        final basket = sim.basketOf(sim.offense);
+        return p.pos.distanceTo(basket) <= MatchSim.layupRange
+            ? '레이업'
+            : '슛 준비';
+      case PlayerState.faking:
+        return '페이크';
+      case PlayerState.receiving:
+        return '리시브';
+      case PlayerState.cutting:
+        return '컷';
+      case PlayerState.chasing:
+        return '볼 추적';
+      case PlayerState.moving:
+        return '이동';
+      case PlayerState.defending:
+        return '수비';
+      case PlayerState.blocking:
+        return '블락!';
+      case PlayerState.idle:
+        return '';
     }
   }
 
@@ -105,9 +117,20 @@ class MatchLayer extends Component {
       final comp = _playerComps[i];
       comp.position = iso.courtToLocal(x, y);
       comp.priority = iso.depthOf(x, y);
-      comp.hasBall = sim.ball.holderId == sim.players[i].id;
-      comp.activity = sim.activityOf(sim.players[i]);
+      final p = sim.players[i];
+      comp.hasBall = sim.ball.holderId == p.id;
       comp.holderHp = sim.holderHp;
+      comp.stateLabel = _labelFor(p);
+      comp.blockProgress = p.state == PlayerState.blocking
+          ? 1 - (p.stateTimer / MatchSim.blockDuration).clamp(0.0, 1.0)
+          : -1;
+      comp.showDefenseRange = p.state == PlayerState.defending;
+      final h = sim.holder;
+      comp.pressuring = p.state == PlayerState.defending &&
+          h != null &&
+          h.state == PlayerState.dribbling &&
+          h.team != p.team &&
+          p.pos.distanceTo(h.pos) <= MatchSim.pressureRadius;
     }
 
     final bx = _lerp(_prevBall.x, _currBall.x, alpha);

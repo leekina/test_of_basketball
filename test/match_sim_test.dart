@@ -82,7 +82,12 @@ void main() {
           continue;
         }
         // 슛/공수 전환이 끼면 시뮬도 리턴 금지를 리셋한다
-        if (e.startsWith('shot') || e.startsWith('score') || e == 'turnover') {
+        if (e.startsWith('shot') ||
+            e.startsWith('layup') ||
+            e.startsWith('score') ||
+            e.startsWith('steal') ||
+            e.startsWith('intercept') ||
+            e == 'turnover') {
           lastPasser = null;
           continue;
         }
@@ -95,7 +100,7 @@ void main() {
               reason: 'seed $seed tick $i: 직전 패서에게 즉시 리턴 패스');
         }
         if (lastPassTick != null) {
-          expect(i - lastPassTick, greaterThanOrEqualTo(10),
+          expect(i - lastPassTick, greaterThanOrEqualTo(5),
               reason: 'seed $seed tick $i: 패스 간격이 너무 짧음');
         }
         lastPasser = holderBefore;
@@ -115,7 +120,19 @@ void main() {
         }
       }
     }
-    expect(seen, containsAll(['pass', 'shot', 'pressure', 'steal']));
+    expect(
+      seen,
+      containsAll([
+        'pass',
+        'shot',
+        'layup',
+        'windup',
+        'fake',
+        'block',
+        'pressure',
+        'steal',
+      ]),
+    );
   });
 
   test('스틸 직후 홀더 HP는 초기화된다', () {

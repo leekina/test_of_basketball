@@ -63,7 +63,7 @@ class BasketballCourtGame extends FlameGame {
 
     camera.viewport.add(
       TextComponent(
-        text: '노란 링: 볼 소유(빨간 칸=HP, 압박당하면 감소)  ● 패스 대상  ▲ 골밑 컷  ◆ 루즈볼 추적',
+        text: '노란 링: 볼 소유 · 머리 위 빨간 칸: HP (압박당하면 감소) · 발밑: 현재 상태',
         textRenderer: TextPaint(
           style: const TextStyle(
             fontSize: 11,
