@@ -252,6 +252,13 @@ class MatchSim {
   static const double doubleTeamRadius = 2.5;
   static const double doubleTeamDuration = 1.6;
 
+  // 득점 후 인바운드 시퀀스
+  static const double netDropDuration = 1.0; // 림 통과 낙하 모션
+  double _netDropTime = 0;
+  int? inbounderId; // 공 주우러 가는 선수 (골대 최근접)
+  int? inboundReceiverId; // 4~5m 에서 받아주는 선수 (2순위)
+  final Vector2 _inboundSpot = Vector2.zero();
+
   /// 진행 중인 슈팅 모션의 길이 (레이업이면 짧음) — 컨테스트 판정에 사용
   double _currentWindup = windupDuration;
 
@@ -419,6 +426,7 @@ class MatchSim {
     shotClock = max(0, shotClock - dt);
 
     _updateBallFlight();
+    _updateNetDrop();
     _updateLooseAir();
     _updateTimedStates();
     _deriveStates();
@@ -510,14 +518,29 @@ class MatchSim {
         awayScore += ball.shotValue;
       }
       lastEvent = 'score:${offense.name}:${ball.shotValue}';
+      final rim = ball.to.clone();
       _switchOffense();
-      // 인바운드: 골대 뒤 베이스라인에 루즈볼로 떨어뜨려
-      // 새 공격팀 선수가 걸어가서 줍는다 (순간이동 방지)
-      final baselineX = ball.to.x < CourtDims.length / 2 ? 0.4 : CourtDims.length - 0.4;
-      _dropLooseAt(
-        Vector2(baselineX, CourtDims.centerY + (_rng.nextDouble() - 0.5) * 4),
-        forTeam: offense,
-      );
+      // 득점 시퀀스: ① 공이 림을 통과해 1초 동안 떨어지고
+      // ② 림 좌측 라인 바로 밖에 공이 놓이면 ③ 최근접이 주워
+      // ④ 4~5m 근처로 온 두 번째 선수에게 인바운드 패스로 재개.
+      // 그동안 양팀 나머지는 존/앵커를 따라 각자 진영으로 복귀한다.
+      ball.phase = BallPhase.loose;
+      ball.holderId = null;
+      ball.receiverId = null;
+      ball.looseFor = offense;
+      ball.flightTime = 0;
+      ball.flightDuration = 0;
+      ball.pos.setFrom(rim);
+      ball.z = CourtDims.rimHeight;
+      _netDropTime = netDropDuration;
+      final sorted = teamOf(offense).toList()
+        ..sort(
+          (a, b) => a.pos.distanceTo(rim).compareTo(b.pos.distanceTo(rim)),
+        );
+      inbounderId = sorted[0].id;
+      inboundReceiverId = sorted[1].id;
+      final outX = rim.x < CourtDims.length / 2 ? -0.35 : CourtDims.length + 0.35;
+      _inboundSpot.setValues(outX, CourtDims.centerY - 2.5); // 림 좌측 라인 밖
     } else {
       lastEvent = 'miss';
       final angle = _rng.nextDouble() * 2 * pi;
@@ -554,6 +577,22 @@ class MatchSim {
   bool get looseAirborne =>
       ball.phase == BallPhase.loose && ball.z > 0.05;
 
+  /// 득점 후 림 통과 낙하 모션 (1초) — 끝나면 라인 밖 인바운드 스팟으로
+  void _updateNetDrop() {
+    if (_netDropTime <= 0) {
+      return;
+    }
+    _netDropTime -= dt;
+    ball.z = max(
+      0,
+      CourtDims.rimHeight * (_netDropTime / netDropDuration),
+    );
+    if (_netDropTime <= 0) {
+      ball.pos.setFrom(_inboundSpot); // 라인 바로 밖에 공 놓기
+      ball.z = 0;
+    }
+  }
+
   /// 리바운드 낙하 진행 — 림에서 튕긴 공이 포물선으로 떨어진다
   void _updateLooseAir() {
     if (ball.phase != BallPhase.loose ||
@@ -580,13 +619,21 @@ class MatchSim {
   static const double reboundJumpDuration = 0.5;
 
   void _tryPickup() {
+    // 림 통과 낙하 연출 중에는 잡을 수 없다
+    if (_netDropTime > 0) {
+      return;
+    }
     // 너무 높이 떠 있으면 아직 아무도 못 잡는다
     if (ball.z > reboundReach) {
       return;
     }
     final airborne = ball.z > 0.3;
-    final candidates =
-        ball.looseFor == null ? players : teamOf(ball.looseFor!).toList();
+    // 인바운드 상황: 지정된 인바운더만 주울 수 있다
+    final candidates = inbounderId != null
+        ? [players[inbounderId!]]
+        : ball.looseFor == null
+            ? players
+            : teamOf(ball.looseFor!).toList();
     final nearest = _nearestOf(candidates, ball.pos);
     final grabRadius = airborne ? 0.9 : pickupRadius;
     if (nearest.pos.distanceTo(ball.pos) > grabRadius) {
@@ -714,6 +761,11 @@ class MatchSim {
     offenseChanges++;
     shotClock = shotClockMax;
     lastPasserId = null;
+    // 공수가 바뀌면 진행 중이던 인바운드/협공은 무효
+    inbounderId = null;
+    inboundReceiverId = null;
+    _netDropTime = 0;
+    doubleTeamerId = null;
   }
 
   // ---------------- 핸들러 판단 ----------------
@@ -727,6 +779,29 @@ class MatchSim {
     );
     final pressure = nearestDef.pos.distanceTo(h.pos);
 
+    // 인바운더: 리시버가 자리 잡을 시간을 주고 인바운드 패스로 재개
+    if (h.id == inbounderId && inboundReceiverId != null) {
+      if (holdTime < 0.3) {
+        return;
+      }
+      final receiver = players[inboundReceiverId!];
+      ball.from.setFrom(h.pos);
+      ball.to.setFrom(receiver.pos);
+      ball.flightTime = 0;
+      ball.flightDuration =
+          max(0.4, h.pos.distanceTo(receiver.pos) / passSpeed);
+      ball.arcPeak = 0.5;
+      ball.receiverId = receiver.id;
+      ball.interceptTried.clear();
+      lastPasserId = h.id;
+      ball.holderId = null;
+      ball.phase = BallPhase.pass;
+      shotClock = shotClockMax; // 인바운드부터 새 공격 시작
+      lastEvent = 'inbound:${receiver.id}';
+      inbounderId = null;
+      inboundReceiverId = null;
+      return;
+    }
     // 샷클락 임박: 릴리즈까지 걸리는 시간을 감안해 강제 슈팅 모션
     if (shotClock <= 0.8) {
       _startWindup(h, distToBasket);
@@ -1127,9 +1202,22 @@ class MatchSim {
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
       return ball.to.clone();
     }
+    // 득점 후 인바운드: 지정 인바운더는 공으로, 리시버는 받을 지점으로,
+    // 나머지는 아래 일반 로직(존/앵커)을 따라 각자 진영으로 복귀한다
+    if (ball.phase == BallPhase.loose && inbounderId != null) {
+      if (p.id == inbounderId) {
+        return _clampToCourt(ball.pos.clone());
+      }
+      if (p.id == inboundReceiverId) {
+        final inDir = Vector2(_inboundSpot.x < 0 ? 1 : -1, 0.35)
+          ..normalize();
+        return _clampToCourt(_inboundSpot + inDir.scaled(4.5));
+      }
+    }
     // 루즈볼: 리바운드 가중치(PF/C 우선)로 뽑힌 선수가 공으로.
     // 공중에 떠 있으면 낙하 지점으로 미리 달려간다
     if (ball.phase == BallPhase.loose &&
+        inbounderId == null &&
         (ball.looseFor == null || ball.looseFor == p.team)) {
       if (_looseChaserOf(p.team).id == p.id) {
         return looseAirborne ? ball.to.clone() : ball.pos.clone();
@@ -1137,7 +1225,8 @@ class MatchSim {
     }
     // 슛이 뜨거나 리바운드가 공중에 있으면 PF/C 는 양팀 모두
     // 림으로 리바운드 진입 (박스아웃 자리)
-    if ((ball.phase == BallPhase.shot || looseAirborne) &&
+    if ((ball.phase == BallPhase.shot ||
+            (looseAirborne && inbounderId == null)) &&
         profileOf(p).crashesBoards) {
       final rim = basketOf(offense);
       final toCenter = rim.x < CourtDims.length / 2 ? 1.0 : -1.0;
@@ -1164,6 +1253,10 @@ class MatchSim {
     }
     if (p.team == offense) {
       if (ball.holderId == p.id) {
+        // 인바운더는 패스할 때까지 라인 밖 자리에서 대기
+        if (p.id == inbounderId) {
+          return p.pos.clone();
+        }
         final defender = _nearestOf(
           teamOf(p.team == Team.home ? Team.away : Team.home),
           p.pos,

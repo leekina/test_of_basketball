@@ -135,6 +135,7 @@ void main() {
         'drive',
         'doubleteam',
         'rebound',
+        'inbound',
       ]),
     );
   });

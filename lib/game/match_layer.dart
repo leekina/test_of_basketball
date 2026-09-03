@@ -172,30 +172,26 @@ class MatchLayer extends Component {
     final bx = _lerp(_prevBall.x, _currBall.x, alpha);
     final by = _lerp(_prevBall.y, _currBall.y, alpha);
     var bz = _lerp(_prevBallZ, _currBallZ, alpha);
-    var sideOffset = 0.0; // 크로스오버 드리블 좌우 흔들림 (화면 px)
-    // 홀더 연출: 슛 모션이면 공을 머리 위로, 드리블이면 바운스+좌우 이동
+    var spinning = sim.ball.phase != BallPhase.held;
+    var spinSpeed = 1.0;
+    // 홀더 연출: 슛 모션이면 공을 몸쪽에 고정, 드리블이면 바운스+저속 회전
     if (sim.ball.phase == BallPhase.held) {
       final h = sim.holder;
       if (h != null &&
           (h.state == PlayerState.windup ||
               h.state == PlayerState.faking)) {
-        // 드리블을 멈추고 공을 머리 위로 들어올린다 (점프에 맞춰 상승)
-        final duration = h.state == PlayerState.faking
-            ? MatchSim.fakeDuration
-            : h.layupMotion
-                ? MatchSim.layupWindupDuration
-                : MatchSim.windupDuration;
-        final progress = 1 - (h.stateTimer / duration).clamp(0.0, 1.0);
-        bz = 2.2 + math.sin(math.pi * progress) * 0.55;
+        bz = 1.2; // 드리블을 멈추고 몸쪽(가슴 높이)에 가만히 든다
       } else {
         bz = 0.45 * math.sin(_renderClock * 9).abs();
-        sideOffset = math.sin(_renderClock * 4.5) * 9;
+        spinning = true; // 드리블 중엔 공 프레임을 천천히 교체
+        spinSpeed = 0.5; // 비행의 절반 속도
       }
     }
     _ballComp
-      ..position = iso.courtToLocal(bx, by)..x += sideOffset
+      ..position = iso.courtToLocal(bx, by)
       ..z = bz
-      ..spinning = sim.ball.phase != BallPhase.held
+      ..spinning = spinning
+      ..spinSpeed = spinSpeed
       ..priority = iso.depthOf(bx, by) + 50;
   }
 

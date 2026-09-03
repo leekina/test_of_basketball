@@ -11,8 +11,9 @@ class BallComponent extends PositionComponent with HasGameReference {
   /// 공 높이 (미터) — MatchLayer가 매 프레임 갱신
   double z = 0;
 
-  /// 이동 중일 때만 회전 애니메이션 재생
+  /// 회전 애니메이션 재생 여부와 속도 배율 (드리블은 비행의 절반 속도)
   bool spinning = false;
+  double spinSpeed = 1.0;
 
   static const double _renderSize = 18;
 
@@ -33,7 +34,7 @@ class BallComponent extends PositionComponent with HasGameReference {
   @override
   void update(double dt) {
     if (spinning) {
-      _ticker.update(dt);
+      _ticker.update(dt * spinSpeed);
     }
   }
 
