@@ -84,7 +84,7 @@ class MatchLayer extends Component {
       case PlayerState.dribbling:
         return '드리블';
       case PlayerState.windup:
-        return p.layupMotion ? '레이업!' : '슛 준비';
+        return p.layupMotion ? '레이업!' : '슛!';
       case PlayerState.faking:
         return '페이크';
       case PlayerState.receiving:
@@ -104,9 +104,9 @@ class MatchLayer extends Component {
       case PlayerState.bodyChecking:
         return '박치기!';
       case PlayerState.driving:
-        return '드라이브!';
+        return '드라이빙!';
       case PlayerState.idle:
-        return '';
+        return '대기';
     }
   }
 

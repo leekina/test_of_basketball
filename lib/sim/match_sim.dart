@@ -1350,6 +1350,19 @@ class MatchSim {
           target.add(escape.normalized()..scale(2.0 - defDist));
         }
       }
+      // 스페이싱: 3m 안의 동료에게서 멀어지는 방향으로 목표를 민다
+      // (오프볼끼리 몰려 있으면 패스 레인과 컷 공간이 죽는다)
+      for (final mate in teamOf(p.team)) {
+        if (mate.id == p.id) {
+          continue;
+        }
+        final d = p.pos.distanceTo(mate.pos);
+        if (d < 3.0 && d > 1e-6) {
+          target.add(
+            (p.pos - mate.pos).normalized()..scale((3.0 - d) * 0.8),
+          );
+        }
+      }
       // SG: 항상 3점 라인 근처에 머문다 — 목표 지점을 아크 반경으로 보정
       if (profileOf(p).arcRelocate) {
         final basket = basketOf(offense);
@@ -1473,10 +1486,10 @@ class MatchSim {
       if (other.id == p.id) {
         continue;
       }
-      // 같은 팀: 스페이싱 유지(0.9m), 상대 팀: 몸싸움 충돌(0.55m).
+      // 같은 팀: 스페이싱 유지(1.1m), 상대 팀: 몸싸움 충돌(0.55m).
       // 상대와 겹쳐 지나갈 수 없으므로 컷/리바운드 진입 무브가
       // 자연스럽게 스크린처럼 수비의 추격 경로를 막는다.
-      final minDist = other.team == p.team ? 0.9 : 0.55;
+      final minDist = other.team == p.team ? 1.1 : 0.55;
       final delta = p.pos - other.pos;
       final distance = delta.length;
       if (distance > 1e-6 && distance < minDist) {
