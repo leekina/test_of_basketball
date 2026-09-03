@@ -56,8 +56,8 @@ class MatchSim {
   static const double dt = 0.1;
 
   static const double playerSpeed = 4.0;
-  static const double passSpeed = 12.0;
-  static const double shotSpeed = 9.0;
+  static const double passSpeed = 7.0;
+  static const double shotSpeed = 6.0;
   static const double shootRange = 6.8;
   static const double shotClockMax = 14.0;
   static const double catchRadius = 1.2;
@@ -232,7 +232,7 @@ class MatchSim {
     ball.from.setFrom(h.pos);
     ball.to.setFrom(basket);
     ball.flightTime = 0;
-    ball.flightDuration = max(0.6, dist / shotSpeed);
+    ball.flightDuration = max(0.9, dist / shotSpeed);
     ball.arcPeak = 1.0 + dist * 0.15;
     ball.shotWillScore = _rng.nextDouble() < shotMakeProb;
     ball.shotValue = dist > CourtDims.threeRadius ? 3 : 2;
@@ -268,7 +268,7 @@ class MatchSim {
     ball.to.setFrom(best.pos);
     ball.flightTime = 0;
     ball.flightDuration =
-        max(0.25, h.pos.distanceTo(best.pos) / passSpeed);
+        max(0.4, h.pos.distanceTo(best.pos) / passSpeed);
     ball.arcPeak = 0.5;
     ball.receiverId = best.id;
     ball.holderId = null;
