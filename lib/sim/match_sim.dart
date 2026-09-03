@@ -24,6 +24,12 @@ class SimPlayer {
   final int id;
   final Team team;
   final Vector2 pos;
+
+  // 오프볼 무브 상태 (공격 시)
+  final Vector2 wander = Vector2.zero(); // 앵커 주변 배회 오프셋
+  double wanderTimer = 0; // 배회 지점 재추첨까지 남은 시간
+  double cutTime = 0; // 골밑 컷 진행 중 남은 시간
+  double cutCooldown = 0; // 다음 컷까지 남은 시간
 }
 
 class SimBall {
@@ -41,6 +47,9 @@ class SimBall {
   int? receiverId;
   bool shotWillScore = false;
   int shotValue = 2;
+
+  /// 루즈볼을 특정 팀만 주울 수 있는 경우 (득점 후 인바운드)
+  Team? looseFor;
 }
 
 class MatchSim {
@@ -148,9 +157,13 @@ class MatchSim {
       }
       lastEvent = 'score:${offense.name}:${ball.shotValue}';
       _switchOffense();
-      // 인바운드: 새 공격팀에서 골대에 가장 가까운 선수에게
-      final inbounder = _nearestOf(teamOf(offense), ball.to);
-      _giveBallTo(inbounder);
+      // 인바운드: 골대 뒤 베이스라인에 루즈볼로 떨어뜨려
+      // 새 공격팀 선수가 걸어가서 줍는다 (순간이동 방지)
+      final baselineX = ball.to.x < CourtDims.length / 2 ? 0.4 : CourtDims.length - 0.4;
+      _dropLooseAt(
+        Vector2(baselineX, CourtDims.centerY + (_rng.nextDouble() - 0.5) * 4),
+        forTeam: offense,
+      );
     } else {
       lastEvent = 'miss';
       final angle = _rng.nextDouble() * 2 * pi;
@@ -160,16 +173,19 @@ class MatchSim {
     }
   }
 
-  void _dropLooseAt(Vector2 spot) {
+  void _dropLooseAt(Vector2 spot, {Team? forTeam}) {
     ball.phase = BallPhase.loose;
     ball.holderId = null;
     ball.receiverId = null;
+    ball.looseFor = forTeam;
     ball.pos.setFrom(_clampToCourt(spot));
     ball.z = 0;
   }
 
   void _tryPickup() {
-    final nearest = _nearestOf(players, ball.pos);
+    final candidates =
+        ball.looseFor == null ? players : teamOf(ball.looseFor!).toList();
+    final nearest = _nearestOf(candidates, ball.pos);
     if (nearest.pos.distanceTo(ball.pos) > pickupRadius) {
       return;
     }
@@ -187,6 +203,7 @@ class MatchSim {
   void _giveBallTo(SimPlayer p) {
     ball.holderId = p.id;
     ball.receiverId = null;
+    ball.looseFor = null;
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
     ball.z = 0;
@@ -287,7 +304,37 @@ class MatchSim {
     (2.0, 11.0),
   ];
 
+  /// 오프볼 공격수의 배회/컷 상태 갱신 (매 틱, 시드 RNG)
+  void _updateOffBallState() {
+    for (final p in players) {
+      final offBallOffense = p.team == offense && ball.holderId != p.id;
+      if (!offBallOffense) {
+        p.cutTime = 0;
+        continue;
+      }
+      // 앵커 주변 배회 지점을 주기적으로 재추첨
+      p.wanderTimer -= dt;
+      if (p.wanderTimer <= 0) {
+        p.wanderTimer = 1.5 + _rng.nextDouble() * 2.5;
+        final angle = _rng.nextDouble() * 2 * pi;
+        final radius = 0.5 + _rng.nextDouble() * 1.8;
+        p.wander.setValues(cos(angle) * radius, sin(angle) * radius);
+      }
+      // 골밑 컷: 쿨다운이 돌면 낮은 확률로 발동
+      if (p.cutTime > 0) {
+        p.cutTime -= dt;
+      } else {
+        p.cutCooldown -= dt;
+        if (p.cutCooldown <= 0 && _rng.nextDouble() < 0.03) {
+          p.cutTime = 1.6;
+          p.cutCooldown = 4 + _rng.nextDouble() * 5;
+        }
+      }
+    }
+  }
+
   void _movePlayers() {
+    _updateOffBallState();
     for (final p in players) {
       final target = _targetFor(p);
       final delta = target - p.pos;
@@ -306,8 +353,9 @@ class MatchSim {
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
       return ball.to.clone();
     }
-    // 루즈볼: 각 팀에서 가장 가까운 선수가 공으로
-    if (ball.phase == BallPhase.loose) {
+    // 루즈볼: 주울 수 있는 팀에서 가장 가까운 선수가 공으로
+    if (ball.phase == BallPhase.loose &&
+        (ball.looseFor == null || ball.looseFor == p.team)) {
       final chaser = _nearestOf(teamOf(p.team), ball.pos);
       if (chaser.id == p.id) {
         return ball.pos.clone();
@@ -317,7 +365,16 @@ class MatchSim {
       if (ball.holderId == p.id) {
         return basketOf(offense);
       }
-      return _anchorFor(p);
+      if (p.cutTime > 0) {
+        // 골밑 컷: 림 방향으로 파고들기 (선수마다 살짝 다른 각도)
+        final basket = basketOf(offense);
+        return Vector2(
+          basket.x,
+          (basket.y + (p.id % 5 - 2) * 1.2)
+              .clamp(1.0, CourtDims.width - 1.0),
+        );
+      }
+      return _anchorFor(p)..add(p.wander);
     }
     return _defenseTargetFor(p);
   }

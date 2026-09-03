@@ -46,6 +46,24 @@ void main() {
     expect(sim.offenseChanges, greaterThan(0));
   });
 
+  test('모든 선수가 계속 움직인다 (오프볼 무브 포함)', () {
+    final sim = MatchSim(seed: 42);
+    final moved = List.filled(10, 0.0);
+    final prev = [for (final p in sim.players) p.pos.clone()];
+    for (var i = 0; i < 600; i++) {
+      // 60초
+      sim.tick();
+      for (var j = 0; j < 10; j++) {
+        moved[j] += sim.players[j].pos.distanceTo(prev[j]);
+        prev[j].setFrom(sim.players[j].pos);
+      }
+    }
+    for (var j = 0; j < 10; j++) {
+      expect(moved[j], greaterThan(20),
+          reason: '선수 $j가 60초 동안 ${moved[j].toStringAsFixed(1)}m만 이동');
+    }
+  });
+
   test('패스와 슛 이벤트가 모두 발생한다', () {
     final sim = MatchSim(seed: 42);
     final seen = <String>{};
