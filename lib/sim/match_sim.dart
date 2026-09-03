@@ -202,7 +202,7 @@ class MatchSim {
 
   // 거리별 슛 성공률 곡선: base - falloff*거리, 블락 컨테스트 시 배율 적용
   // (림 근처 ~70%, 미드레인지 ~50%, 3점 ~36% — 실제 농구 근사)
-  static const double shotBaseProb = 0.74;
+  static const double shotBaseProb = 0.78;
   static const double shotDistFalloff = 0.05;
   static const double shotProbFloor = 0.25;
   static const double contestedMultiplier = 0.45;
@@ -661,8 +661,10 @@ class MatchSim {
       return;
     }
     // HP 마지막 칸: 골밑 근처면 뺏기느니 쏜다 (필사 슛).
-    // 멀면 무리슛 대신 리트리트/패스로 버틴다 — 가끔은 스틸당한다.
-    if (holderHp <= 1 && distToBasket < 5.5) {
+    // 샷클락도 얼마 없으면 거리 불문 던진다.
+    if (holderHp <= 1 &&
+        (distToBasket < 5.5 ||
+            (shotClock < 5 && distToBasket < shootRange))) {
       _startWindup(h, distToBasket);
       return;
     }
@@ -687,13 +689,13 @@ class MatchSim {
     // 밀착당했으면 무리슛 대신 페이크로 공간을 만든다.
     // 포지션 성향: SG 는 자주 쏘고, PG 는 아끼고, 빅맨은 사거리 제한.
     if (distToBasket < shootRange && distToBasket <= profile.maxShotDist) {
-      if (pressure > 1.5 &&
+      if (pressure > 1.2 &&
           _rng.nextDouble() < 0.45 * profile.shootMul) {
         _startWindup(h, distToBasket); // 오픈 슛
         return;
       }
-      if (pressure > 1.0 &&
-          _rng.nextDouble() < 0.08 * profile.shootMul) {
+      if (pressure > 0.8 &&
+          _rng.nextDouble() < 0.10 * profile.shootMul) {
         _startWindup(h, distToBasket); // 세미오픈
         return;
       }
@@ -840,8 +842,10 @@ class MatchSim {
                   mate.position.index <= CourtPosition.shootingGuard.index
               ? 2.0
               : 0.0;
+      // 짧은 패스 선호 — 비행 시간이 길수록 레인 점프에 노출된다
       final score = openness -
-          mate.pos.distanceTo(basket) * 0.15 +
+          mate.pos.distanceTo(basket) * 0.15 -
+          passDist * 0.12 +
           pgCarryBonus +
           postEntryBonus +
           backdoorBonus +
@@ -1048,11 +1052,26 @@ class MatchSim {
         );
         final toDefender = defender.pos - p.pos;
         // 드리블이 느려(80%) 정면 돌파가 어렵다 — HP가 깎이기 시작하면
-        // 일찍 물러나서 볼 무브먼트로 풀어간다 (리트리트 드리블)
+        // 옆으로 흘러나가며 볼 무브먼트로 풀어간다 (측면 회피).
+        // 뒤로 빠지면 하프라인까지 밀리므로 후퇴 성분은 최소화한다.
         if (holderHp <= 2 &&
             toDefender.length < 1.3 &&
             toDefender.length > 1e-6) {
-          return _clampToCourt(p.pos - toDefender.normalized().scaled(2.5));
+          final away = -toDefender.normalized();
+          // HP 1: 최후 수단 — 뒤로 완전히 빠져 접촉을 끊는다
+          if (holderHp <= 1) {
+            return _clampToCourt(p.pos + away.scaled(2.5));
+          }
+          // HP 2: 측면 회피 — 전진 자세를 유지한 채 옆으로 흘러나간다
+          final basket = basketOf(offense);
+          final toBasketDir = (basket - p.pos)..normalize();
+          final perpA = Vector2(away.y, -away.x);
+          final perpB = Vector2(-away.y, away.x);
+          final perp =
+              perpA.dot(toBasketDir) >= perpB.dot(toBasketDir) ? perpA : perpB;
+          return _clampToCourt(
+            p.pos + perp.scaled(2.2) + away.scaled(0.5),
+          );
         }
         // 크로스오버 돌파: 수비가 돌파 경로를 막고 있으면 사선으로 제친다
         // (수비 반응 지연 0.4초 동안 블로바이 창이 열린다)
@@ -1143,10 +1162,10 @@ class MatchSim {
     }
     final markPos = p.perceivedMarkPos;
     final basket = basketOf(offense);
-    // 하프코트 디펜스: 마크가 백코트에 있으면 풀코트 프레스 대신
-    // 자기 진영으로 물러나 마크가 오는 길목에서 대기한다
+    // 하프코트 디펜스: 마크가 "백코트"(하프라인 밖, 14m)에 있을 때만
+    // 물러나 길목에서 대기하고, 하프라인을 넘어오면 끝까지 붙는다
     final markToBasket = markPos.distanceTo(basket);
-    if (markToBasket > 13) {
+    if (markToBasket > CourtDims.length / 2) {
       final dir = markPos - basket;
       if (dir.length > 1e-6) {
         return _clampToCourt(basket + dir.normalized().scaled(11));
@@ -1160,20 +1179,24 @@ class MatchSim {
     // 항상 마크와 림 사이에 선다. 볼 핸들러 마크는 바짝(압박),
     // 오프볼은 포지션 성향대로 (C 는 드롭 커버리지로 골밑 사그)
     final standOff = ball.holderId == mark.id
-        ? 0.45
+        ? 0.6
         : profileOf(p).defenseStandoff;
     return markPos + toBasket.scaled(standOff / len);
   }
 
   void _separate(SimPlayer p) {
-    for (final mate in teamOf(p.team)) {
-      if (mate.id == p.id) {
+    for (final other in players) {
+      if (other.id == p.id) {
         continue;
       }
-      final delta = p.pos - mate.pos;
+      // 같은 팀: 스페이싱 유지(0.9m), 상대 팀: 몸싸움 충돌(0.55m).
+      // 상대와 겹쳐 지나갈 수 없으므로 컷/리바운드 진입 무브가
+      // 자연스럽게 스크린처럼 수비의 추격 경로를 막는다.
+      final minDist = other.team == p.team ? 0.9 : 0.55;
+      final delta = p.pos - other.pos;
       final distance = delta.length;
-      if (distance > 1e-6 && distance < 0.9) {
-        p.pos.add(delta.scaled((0.9 - distance) / distance * 0.5));
+      if (distance > 1e-6 && distance < minDist) {
+        p.pos.add(delta.scaled((minDist - distance) / distance * 0.5));
       }
     }
   }
