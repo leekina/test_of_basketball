@@ -198,6 +198,8 @@ class MatchSim {
   static const double shotClockMax = 14.0;
   static const double catchRadius = 1.2;
   static const double pickupRadius = 0.7;
+  static const double heldBallHeight = 1.2; // 소유 중 공 높이 (몸쪽)
+  static const double shotReleaseHeight = 1.8; // 슛 릴리즈 높이
 
   // 슛/레이업/블락 상호작용 (공 물리와 무관한 판정 파라미터)
   static const double windupDuration = 0.5; // 슈팅 준비 유지 시간
@@ -446,7 +448,7 @@ class MatchSim {
       _applyDefensivePressure(holder!);
       if (ball.phase == BallPhase.held && holder != null) {
         ball.pos.setFrom(holder!.pos);
-        ball.z = 0;
+        ball.z = heldBallHeight; // 몸 높이 — 릴리즈 순간 바닥 출발 방지
       }
     }
     if (ball.phase == BallPhase.loose) {
@@ -468,8 +470,8 @@ class MatchSim {
       ..scale(u)
       ..add(ball.from);
     final baseZ = ball.phase == BallPhase.shot
-        ? _lerpDouble(1.8, CourtDims.rimHeight, u)
-        : 1.2;
+        ? _lerpDouble(shotReleaseHeight, CourtDims.rimHeight, u)
+        : heldBallHeight;
     ball.z = baseZ + 4 * ball.arcPeak * u * (1 - u);
     // 리시버가 마중 나와 조기 캐치 — 수비가 레인에 닿기 전에 받는다
     if (ball.phase == BallPhase.pass && u < 1.0 && ball.z < 2.2) {
@@ -745,7 +747,7 @@ class MatchSim {
     doubleTeamerId = null; // 홀더가 바뀌면 협공 해제
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
-    ball.z = 0;
+    ball.z = heldBallHeight;
     if (p.team != offense) {
       _switchOffense(to: p.team);
     }
@@ -795,6 +797,7 @@ class MatchSim {
       ball.interceptTried.clear();
       lastPasserId = h.id;
       ball.holderId = null;
+      ball.z = heldBallHeight; // 몸 높이에서 출발
       ball.phase = BallPhase.pass;
       shotClock = shotClockMax; // 인바운드부터 새 공격 시작
       lastEvent = 'inbound:${receiver.id}';
@@ -833,7 +836,7 @@ class MatchSim {
     // 드라이빙: 3점 라인 안이면 확률적으로 림을 향해 가속 돌파
     if (distToBasket < CourtDims.threeRadius &&
         distToBasket > layupRange &&
-        _rng.nextDouble() < 0.05) {
+        _rng.nextDouble() < 0.09) {
       h.driveTime = 2.2;
       lastEvent = 'drive:${h.id}';
       return;
@@ -852,13 +855,16 @@ class MatchSim {
     // 밀착당했으면 무리슛 대신 페이크로 공간을 만든다.
     // 포지션 성향: SG 는 자주 쏘고, PG 는 아끼고, 빅맨은 사거리 제한.
     if (distToBasket < shootRange && distToBasket <= profile.maxShotDist) {
+      // 3점은 신중하게 — 아크 밖에서는 시도 확률을 크게 낮춘다
+      final rangeMul =
+          distToBasket > CourtDims.threeRadius ? 0.4 : 1.0;
       if (pressure > 1.2 &&
-          _rng.nextDouble() < 0.45 * profile.shootMul) {
+          _rng.nextDouble() < 0.45 * profile.shootMul * rangeMul) {
         _startWindup(h, distToBasket); // 오픈 슛
         return;
       }
       if (pressure > 0.8 &&
-          _rng.nextDouble() < 0.10 * profile.shootMul) {
+          _rng.nextDouble() < 0.10 * profile.shootMul * rangeMul) {
         _startWindup(h, distToBasket); // 세미오픈
         return;
       }
@@ -946,6 +952,7 @@ class MatchSim {
     lastPasserId = null;
     lastShooterId = h.id;
     ball.holderId = null;
+    ball.z = shotReleaseHeight; // 손끝에서 출발
     ball.phase = BallPhase.shot;
     final kind = layup ? 'layup' : 'shot';
     lastEvent = '$kind:${ball.shotValue}${contested ? ':c' : ''}';
@@ -1058,6 +1065,7 @@ class MatchSim {
     ball.interceptTried.clear();
     lastPasserId = h.id;
     ball.holderId = null;
+    ball.z = heldBallHeight; // 몸 높이에서 출발
     ball.phase = BallPhase.pass;
     lastEvent = 'pass:${best.id}';
   }
