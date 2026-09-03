@@ -105,6 +105,10 @@ class MatchLayer extends Component {
         return '박치기!';
       case PlayerState.driving:
         return '드라이빙!';
+      case PlayerState.screening:
+        return '스크린!';
+      case PlayerState.stunned:
+        return '스턴!';
       case PlayerState.idle:
         return '대기';
     }
@@ -160,6 +164,7 @@ class MatchLayer extends Component {
       } else {
         comp.lungeProgress = -1;
       }
+      comp.stunned = p.state == PlayerState.stunned;
       comp.showDefenseRange = p.state == PlayerState.defending;
       final h = sim.holder;
       comp.pressuring = p.state == PlayerState.defending &&

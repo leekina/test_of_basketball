@@ -40,6 +40,9 @@
 | [2026-08-31_flutter-flame-vs-godot-2d-game.md](./2026-08-31_flutter-flame-vs-godot-2d-game.md) | 엔진 선정 리서치 — Flame 채택 근거 |
 | [2026-09-02_flame-isometric-basketball-tycoon.md](./2026-09-02_flame-isometric-basketball-tycoon.md) | 아이소메트릭·z축 기술 타당성 검토 (조건부 GO) |
 | [2026-09-02_basketball-tycoon-match-engine-design.md](./2026-09-02_basketball-tycoon-match-engine-design.md) | 경기 시뮬레이션 엔진 설계 (창발 코어 + 감독 개입) |
+| [2026-09-04_game-rules.md](./2026-09-04_game-rules.md) | **현재 룰북** — 구현된 경기 규칙 전체 (v2) |
+| [2026-09-03_balance-evolution-log.md](./2026-09-03_balance-evolution-log.md) | 밸런스 진화 로그 (측정→수정 반복 기록) |
+| [2026-09-04_skill-candidates.md](./2026-09-04_skill-candidates.md) | 스킬로 분리할 개인기 후보 리스트 |
 
 ### Flame 개발 레퍼런스 (`flame/` — game_playground에서 가져옴)
 | 문서 | 내용 |

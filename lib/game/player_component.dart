@@ -39,6 +39,9 @@ class PlayerComponent extends PositionComponent {
   double lungeProgress = -1;
   final Vector2 lungeDir = Vector2.zero();
 
+  /// 스턴 중 — 얼굴이 회색으로 바뀐다
+  bool stunned = false;
+
   /// 수비 범위(압박 반경) 표시 여부 — 수비중 상태일 때
   bool showDefenseRange = false;
 
@@ -82,6 +85,8 @@ class PlayerComponent extends PositionComponent {
         ? const Color(0xFFD84A4A)
         : const Color(0xFF4A6AD8);
   static final Paint _headPaint = Paint()..color = const Color(0xFFF2C9A0);
+  static final Paint _stunnedHeadPaint = Paint()
+    ..color = const Color(0xFF9AA0A6);
   static final Paint _shadowPaint = Paint()..color = const Color(0x55000000);
   static final Paint _ringPaint = Paint()
     ..color = const Color(0xFFFFE066)
@@ -167,11 +172,11 @@ class PlayerComponent extends PositionComponent {
       const Radius.circular(5),
     );
     canvas.drawRRect(body, _bodyPaint);
-    // 머리
+    // 머리 (스턴 중엔 회색)
     canvas.drawCircle(
       Offset(0, -_bodyHeight - _headRadius + 1),
       _headRadius,
-      _headPaint,
+      stunned ? _stunnedHeadPaint : _headPaint,
     );
     // 포지션 약칭 (유니폼)
     _numberPaint.render(

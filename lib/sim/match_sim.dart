@@ -109,6 +109,8 @@ enum PlayerState {
   rebounding, // 리바운드 점프 (공중 볼 잡기)
   bodyChecking, // 몸통박치기 (드리블러 접촉 시 HP 깎는 모션)
   driving, // 림을 향한 드라이브 (1.1배 가속, 도착하면 레이업)
+  screening, // 스크린 세팅 (제자리 — 부딪힌 상대 수비는 스턴)
+  stunned, // 스턴 (1초 제자리 고정 — 스크린/리바운드 패배/스틸·블락 피해)
 }
 
 class SimPlayer {
@@ -134,17 +136,19 @@ class SimPlayer {
   // 상태 머신
   PlayerState state = PlayerState.idle;
   double stateTimer = 0; // windup/faking/blocking 같은 시한부 상태의 남은 시간
-  double fakeCooldown = 0; // 페이크 연속 사용 방지
   double checkCooldown = 0; // 몸통박치기 쿨타임
   double driveTime = 0; // 드라이브 잔여 시간 (홀더 전용)
   bool layupMotion = false; // 현재 windup 이 레이업(활공)인가
+  double stunImmunity = 0; // 스턴 직후 재스턴 방지
 
   bool get inTimedState =>
       (state == PlayerState.windup ||
           state == PlayerState.faking ||
           state == PlayerState.blocking ||
           state == PlayerState.rebounding ||
-          state == PlayerState.bodyChecking) &&
+          state == PlayerState.bodyChecking ||
+          state == PlayerState.screening ||
+          state == PlayerState.stunned) &&
       stateTimer > 0;
 }
 
@@ -174,17 +178,28 @@ class SimBall {
 class MatchSim {
   MatchSim({int seed = 42}) : _rng = Random(seed) {
     // 주의: players[i].id == i 불변식을 코드 전체가 의존한다 (holder 조회 등)
+    // 팁오프 대형: 양팀 C 가 센터서클, 나머지는 자기 진영
+    const homeSpots = [(10.0, 7.5), (8.0, 3.5), (8.0, 11.5), (5.0, 5.5), (13.2, 7.5)];
     for (var i = 0; i < 5; i++) {
-      players.add(SimPlayer(i, Team.home, 10 + 2.0 * i, 2.5 + 2.5 * i));
+      final (x, y) = homeSpots[i];
+      players.add(SimPlayer(i, Team.home, x, y));
     }
     for (var i = 0; i < 5; i++) {
-      players.add(SimPlayer(5 + i, Team.away, 18 - 2.0 * i, 2.5 + 2.5 * i));
+      final (x, y) = homeSpots[i];
+      players.add(SimPlayer(5 + i, Team.away, CourtDims.length - x, y));
     }
     assert(
       players.every((p) => players[p.id] == p),
       'players 리스트는 index == id 여야 한다',
     );
-    _giveBallTo(players[0]);
+    // 팁오프: 센터서클에서 공을 띄우고 리바운드 경쟁으로 첫 소유 결정
+    _dropLooseAt(
+      Vector2(
+        CourtDims.length / 2 + (_rng.nextDouble() - 0.5) * 1.2,
+        CourtDims.centerY + (_rng.nextDouble() - 0.5) * 1.2,
+      ),
+      bounceFrom: Vector2(CourtDims.length / 2, CourtDims.centerY),
+    );
   }
 
   /// 시뮬레이션 틱 간격 (초) — 10 tick/s
@@ -254,6 +269,29 @@ class MatchSim {
   static const double doubleTeamRadius = 2.5;
   static const double doubleTeamDuration = 1.6;
 
+  // 스턴: 스크린 충돌 / 리바운드 경합 패배 / 스틸·블락 피해 시 1초 고정
+  static const double stunDuration = 1.0;
+  static const double stunImmunityDuration = 2.0;
+
+  // 스크린 플레이 (픽앤롤 / 핀다운)
+  int? screenerId; // 스크린 세터
+  int? screenTargetId; // 스크린 수혜자 (온볼=홀더, 핀다운=SG)
+  bool screenSet = false; // 세터가 자리를 잡았는가
+  bool _screenOnBall = true;
+  double _screenTime = 0; // 세팅 유지 잔여 시간
+  double _screenCooldown = 3.0;
+
+  // 속공: 라이브볼 턴오버 직후 몇 초간 발동
+  double fastBreakTime = 0;
+  static const double fastBreakDuration = 4.0;
+
+  // 클로즈아웃: 오픈 캐치에 가장 가까운 수비수가 달려나간다
+  int? closeoutId;
+  double _closeoutTime = 0;
+
+  // 마지막으로 공을 만진 팀 (아웃오브바운드 소유권 판정)
+  Team lastTouchTeam = Team.home;
+
   // 득점 후 인바운드 시퀀스
   static const double netDropDuration = 1.0; // 림 통과 낙하 모션
   double _netDropTime = 0;
@@ -277,6 +315,11 @@ class MatchSim {
   /// 'pickup:7', 'turnover') — 없으면 null
   String? lastEvent;
 
+  /// 디버그/UI 표시용 getter
+  double get netDropTime => _netDropTime;
+  double get doubleTeamTime => _doubleTeamTime;
+  double get closeoutTime => _closeoutTime;
+
   /// 공격 팀이 노리는 골대
   Vector2 basketOf(Team team) => team == Team.home
       ? Vector2(CourtDims.length - CourtDims.basketX, CourtDims.centerY)
@@ -292,8 +335,8 @@ class MatchSim {
   /// 시한부 상태(windup/faking/blocking) 타이머 진행 및 만료 처리
   void _updateTimedStates() {
     for (final p in players) {
-      if (p.fakeCooldown > 0) {
-        p.fakeCooldown -= dt;
+      if (p.stunImmunity > 0) {
+        p.stunImmunity -= dt;
       }
       if (p.checkCooldown > 0) {
         p.checkCooldown -= dt;
@@ -316,21 +359,15 @@ class MatchSim {
           p.state = PlayerState.idle;
         case PlayerState.faking:
           p.state = PlayerState.idle;
-          // 페이크에 수비가 떴으면 착지 전에 바로 진짜 슛 (오픈 찬스)
-          if (ball.holderId == p.id &&
-              players.any(
-                (d) =>
-                    d.team != p.team &&
-                    d.state == PlayerState.blocking &&
-                    d.pos.distanceTo(p.pos) < blockRadius,
-              )) {
-            _startWindup(p, p.pos.distanceTo(basketOf(offense)));
-          }
         case PlayerState.blocking:
           p.state = PlayerState.idle;
         case PlayerState.rebounding:
           p.state = PlayerState.idle;
         case PlayerState.bodyChecking:
+          p.state = PlayerState.idle;
+        case PlayerState.screening:
+          p.state = PlayerState.idle;
+        case PlayerState.stunned:
           p.state = PlayerState.idle;
         default:
           break;
@@ -434,6 +471,16 @@ class MatchSim {
     _deriveStates();
     _tryBlockReactions();
     _updateDoubleTeam();
+    _updateScreenPlay();
+    if (fastBreakTime > 0) {
+      fastBreakTime -= dt;
+    }
+    if (_closeoutTime > 0) {
+      _closeoutTime -= dt;
+      if (_closeoutTime <= 0) {
+        closeoutId = null;
+      }
+    }
     _movePlayers();
 
     final h = holder;
@@ -476,7 +523,7 @@ class MatchSim {
     // 리시버가 마중 나와 조기 캐치 — 수비가 레인에 닿기 전에 받는다
     if (ball.phase == BallPhase.pass && u < 1.0 && ball.z < 2.2) {
       final receiver = players[ball.receiverId!];
-      if (receiver.pos.distanceTo(ball.pos) <= 0.8) {
+      if (receiver.pos.distanceTo(ball.pos) <= 1.0) {
         _giveBallTo(receiver);
         return;
       }
@@ -494,6 +541,7 @@ class MatchSim {
         ball.interceptTried.add(d.id);
         if (_rng.nextDouble() < interceptProb) {
           _giveBallTo(d);
+          fastBreakTime = fastBreakDuration; // 인터셉트 → 속공
           lastEvent = 'intercept:${d.id}';
           return;
         }
@@ -561,8 +609,9 @@ class MatchSim {
     ball.looseFor = forTeam;
     if (bounceFrom != null) {
       // 림 높이에서 리바운드 지점으로 포물선 낙하 (0.55초)
+      // 착지점은 클램프하지 않는다 — 라인을 넘으면 아웃오브바운드
       ball.from.setFrom(bounceFrom);
-      ball.to.setFrom(_clampToCourt(spot));
+      ball.to.setFrom(spot);
       ball.flightTime = 0;
       ball.flightDuration = 0.55;
       ball.pos.setFrom(bounceFrom);
@@ -611,7 +660,47 @@ class MatchSim {
     ball.z = (1 - u) * CourtDims.rimHeight + sin(pi * u) * 0.4;
     if (u >= 1.0) {
       ball.z = 0;
+      _checkOutOfBounds();
     }
+  }
+
+  /// 루즈볼이 라인을 넘었으면 마지막 터치 상대팀의 스로인으로 재개
+  void _checkOutOfBounds() {
+    final pos = ball.pos;
+    final out = pos.x < 0 ||
+        pos.x > CourtDims.length ||
+        pos.y < 0 ||
+        pos.y > CourtDims.width;
+    if (!out || inbounderId != null) {
+      return;
+    }
+    final award =
+        lastTouchTeam == Team.home ? Team.away : Team.home;
+    lastEvent = 'outofbounds:${award.name}';
+    if (award != offense) {
+      _switchOffense(to: award);
+    }
+    // 스로인 지점: 넘어간 라인 바로 밖
+    final sx = pos.x < 0
+        ? -0.35
+        : pos.x > CourtDims.length
+            ? CourtDims.length + 0.35
+            : pos.x.clamp(0.5, CourtDims.length - 0.5);
+    final sy = pos.x < 0 || pos.x > CourtDims.length
+        ? pos.y.clamp(0.5, CourtDims.width - 0.5)
+        : (pos.y < 0 ? -0.35 : CourtDims.width + 0.35);
+    _inboundSpot.setValues(sx.toDouble(), sy.toDouble());
+    ball.pos.setFrom(_inboundSpot);
+    ball.z = 0;
+    ball.looseFor = award;
+    final sorted = teamOf(award).toList()
+      ..sort(
+        (a, b) => a.pos
+            .distanceTo(_inboundSpot)
+            .compareTo(b.pos.distanceTo(_inboundSpot)),
+      );
+    inbounderId = sorted[0].id;
+    inboundReceiverId = sorted[1].id;
   }
 
   /// 점프해서 공을 잡을 수 있는 최대 높이
@@ -645,13 +734,12 @@ class MatchSim {
       // 리바운드 점프로 공중에서 낚아챈다 — 착지 동안 잠깐 멈춘다
       nearest.state = PlayerState.rebounding;
       nearest.stateTimer = reboundJumpDuration;
-      // 경합하던 근처 선수들도 같이 뛰어오른다
+      // 리바운드 경합에서 밀린 근처 선수들은 스턴
       for (final other in players) {
         if (other.id != nearest.id &&
             !other.inTimedState &&
             other.pos.distanceTo(ball.pos) < 1.3) {
-          other.state = PlayerState.rebounding;
-          other.stateTimer = reboundJumpDuration;
+          _stun(other);
         }
       }
     }
@@ -660,10 +748,119 @@ class MatchSim {
     lastEvent = airborne ? 'rebound:${nearest.id}' : 'pickup:${nearest.id}';
     if (nearest.team != wasOffense) {
       _switchOffense(to: nearest.team);
+      fastBreakTime = fastBreakDuration; // 라이브볼 턴오버 → 속공
       lastEvent = 'turnover';
     } else {
       shotClock = shotClockMax; // 공격 리바운드도 리셋 (단순화)
     }
+  }
+
+  /// 스턴: 1초 제자리 고정 (재스턴 방지 면역 포함)
+  void _stun(SimPlayer p) {
+    if (p.stunImmunity > 0 || p.state == PlayerState.stunned) {
+      return;
+    }
+    p.state = PlayerState.stunned;
+    p.stateTimer = stunDuration;
+    p.stunImmunity = stunDuration + stunImmunityDuration;
+    p.driveTime = 0;
+    lastEvent = 'stun:${p.id}';
+  }
+
+  /// 스크린 플레이 오케스트레이션 — 픽앤롤(온볼) / 핀다운(오프볼).
+  /// 세터가 자리를 잡으면(screening) 부딪힌 상대 수비는 스턴된다.
+  void _updateScreenPlay() {
+    final h = holder;
+    // 진행 중 관리
+    if (screenerId != null) {
+      final screener = players[screenerId!];
+      final target =
+          screenTargetId == null ? null : players[screenTargetId!];
+      final invalid = h == null ||
+          target == null ||
+          screener.team != offense ||
+          screener.state == PlayerState.stunned;
+      if (invalid) {
+        _clearScreen();
+        return;
+      }
+      if (!screenSet) {
+        // 세팅 지점 도착 판정
+        if (screener.pos.distanceTo(_screenSpot(target)) < 0.7) {
+          screenSet = true;
+          screener.state = PlayerState.screening;
+          screener.stateTimer = 1.5;
+          _screenTime = 1.5;
+          if (_screenOnBall) {
+            h.driveTime = 1.6; // 스크린을 타고 드라이브
+          } else {
+            // 핀다운: 수혜자(SG)가 스크린을 돌아 오픈 지점으로 튀어나온다
+            target.wanderTimer = 1.2;
+            target.wander.setValues(2.5, target.pos.y < CourtDims.centerY ? 1.5 : -1.5);
+          }
+        }
+        return;
+      }
+      _screenTime -= dt;
+      if (_screenTime <= 0 || screener.state != PlayerState.screening) {
+        // 롤: 세터가 림으로 파고든다 (픽앤"롤")
+        screener.cutTime = 1.4;
+        _clearScreen(cooldown: 6 + _rng.nextDouble() * 4);
+      }
+      return;
+    }
+    // 새 스크린 시작 판단
+    _screenCooldown -= dt;
+    if (_screenCooldown > 0 ||
+        h == null ||
+        ball.phase != BallPhase.held ||
+        h.pos.distanceTo(basketOf(offense)) > 11 ||
+        _rng.nextDouble() > 0.08) {
+      return;
+    }
+    // 세터: 홀더가 아닌 빅맨 (C 우선)
+    final bigs = teamOf(offense)
+        .where(
+          (p) =>
+              p.id != h.id &&
+              !p.inTimedState &&
+              profileOf(p).crashesBoards,
+        )
+        .toList();
+    if (bigs.isEmpty) {
+      return;
+    }
+    bigs.sort((a, b) => b.position.index.compareTo(a.position.index));
+    final setter = bigs.first;
+    _screenOnBall = _rng.nextDouble() < 0.6;
+    final sg = teamOf(offense).firstWhere(
+      (p) => p.position == CourtPosition.shootingGuard,
+    );
+    final beneficiary = _screenOnBall || sg.id == h.id ? h : sg;
+    _screenOnBall = beneficiary.id == h.id;
+    screenerId = setter.id;
+    screenTargetId = beneficiary.id;
+    screenSet = false;
+    lastEvent = _screenOnBall ? 'screen:onball' : 'screen:pindown';
+  }
+
+  /// 스크린 세팅 지점: 수혜자의 최근접 수비수 바로 앞
+  Vector2 _screenSpot(SimPlayer target) {
+    final defense = offense == Team.home ? Team.away : Team.home;
+    final defender = _nearestOf(teamOf(defense), target.pos);
+    final dir = defender.pos - target.pos;
+    if (dir.length < 1e-6) {
+      return defender.pos.clone();
+    }
+    return _clampToCourt(target.pos + dir.normalized().scaled(0.9));
+  }
+
+  void _clearScreen({double cooldown = 3.0}) {
+    screenerId = null;
+    screenTargetId = null;
+    screenSet = false;
+    _screenTime = 0;
+    _screenCooldown = cooldown;
   }
 
   /// 더블팀 판단: 홀더 근처에 수비수 둘 → 확률적으로 협공 개시.
@@ -696,6 +893,20 @@ class MatchSim {
       doubleTeamerId = near[1].id; // 두 번째로 가까운 수비수가 협공
       _doubleTeamTime = doubleTeamDuration;
       lastEvent = 'doubleteam:${near[1].id}';
+      return;
+    }
+    // 헬프 디펜스: 홀더가 골밑(5m)까지 뚫고 들어왔는데 앞에 수비가 없으면
+    // 가장 가까운 수비수가 존을 버리고 막으러 나온다 (코너가 비는 대가)
+    if (h.pos.distanceTo(basketOf(offense)) < 5 && near.isEmpty) {
+      final defenders = teamOf(h.team == Team.home ? Team.away : Team.home)
+          .where((d) => d.state == PlayerState.defending)
+          .toList();
+      if (defenders.isNotEmpty) {
+        final helper = _nearestOf(defenders, h.pos);
+        doubleTeamerId = helper.id;
+        _doubleTeamTime = 1.2;
+        lastEvent = 'help:${helper.id}';
+      }
     }
   }
 
@@ -729,7 +940,10 @@ class MatchSim {
         h.pos.setFrom(_clampToCourt(h.pos + push.normalized().scaled(0.35)));
       }
       if (holderHp <= 0) {
+        final victim = h;
         _giveBallTo(d);
+        fastBreakTime = fastBreakDuration; // 라이브볼 스틸 → 속공
+        _stun(victim);
         lastEvent = 'steal:${d.id}';
       } else {
         lastEvent = 'bodycheck:${d.id}:$holderHp';
@@ -745,6 +959,19 @@ class MatchSim {
     holdTime = 0;
     holderHp = maxHolderHp;
     doubleTeamerId = null; // 홀더가 바뀌면 협공 해제
+    lastTouchTeam = p.team;
+    // 클로즈아웃: 오픈 캐치면 가장 가까운 수비수가 전력으로 달려나간다
+    final opponents = teamOf(p.team == Team.home ? Team.away : Team.home)
+        .where((d) => d.state == PlayerState.defending)
+        .toList();
+    if (opponents.isNotEmpty &&
+        p.pos.distanceTo(basketOf(p.team)) < shootRange) {
+      final nearestDef = _nearestOf(opponents, p.pos);
+      if (nearestDef.pos.distanceTo(p.pos) > 2.2) {
+        closeoutId = nearestDef.id;
+        _closeoutTime = 1.2;
+      }
+    }
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
     ball.z = heldBallHeight;
@@ -763,11 +990,15 @@ class MatchSim {
     offenseChanges++;
     shotClock = shotClockMax;
     lastPasserId = null;
-    // 공수가 바뀌면 진행 중이던 인바운드/협공은 무효
+    // 공수가 바뀌면 진행 중이던 인바운드/협공/스크린/속공은 무효
     inbounderId = null;
     inboundReceiverId = null;
     _netDropTime = 0;
     doubleTeamerId = null;
+    _clearScreen();
+    fastBreakTime = 0;
+    closeoutId = null;
+    _closeoutTime = 0;
   }
 
   // ---------------- 핸들러 판단 ----------------
@@ -799,6 +1030,7 @@ class MatchSim {
       ball.holderId = null;
       ball.z = heldBallHeight; // 몸 높이에서 출발
       ball.phase = BallPhase.pass;
+      lastTouchTeam = h.team;
       shotClock = shotClockMax; // 인바운드부터 새 공격 시작
       lastEvent = 'inbound:${receiver.id}';
       inbounderId = null;
@@ -868,12 +1100,6 @@ class MatchSim {
         _startWindup(h, distToBasket); // 세미오픈
         return;
       }
-      if (pressure <= blockRadius &&
-          h.fakeCooldown <= 0 &&
-          _rng.nextDouble() < 0.15) {
-        _startFake(h); // 밀착 — 페이크로 수비를 띄운다
-        return;
-      }
     }
     // 잡은 직후에는 패스하지 않는다 (핑퐁 방지)
     if (holdTime < minHoldBeforePass) {
@@ -920,12 +1146,6 @@ class MatchSim {
     lastEvent = 'windup:${h.id}';
   }
 
-  void _startFake(SimPlayer h) {
-    h.state = PlayerState.faking;
-    h.stateTimer = fakeDuration;
-    h.fakeCooldown = 2.5;
-    lastEvent = 'fake:${h.id}';
-  }
 
   /// windup 종료 시점의 실제 릴리즈. 이번 모션 중에 뛴 블락만 컨테스트로 친다.
   void _releaseShot(SimPlayer h) {
@@ -954,6 +1174,10 @@ class MatchSim {
     ball.holderId = null;
     ball.z = shotReleaseHeight; // 손끝에서 출발
     ball.phase = BallPhase.shot;
+    lastTouchTeam = h.team;
+    if (contested && !ball.shotWillScore) {
+      _stun(h); // 블락당함 — 슈터 스턴
+    }
     final kind = layup ? 'layup' : 'shot';
     lastEvent = '$kind:${ball.shotValue}${contested ? ':c' : ''}';
   }
@@ -991,7 +1215,7 @@ class MatchSim {
         if (t <= 0.15) {
           continue;
         }
-        if (d.pos.distanceTo(h.pos + ab * t) < 0.55) {
+        if (d.pos.distanceTo(h.pos + ab * t) < 0.8) {
           laneRisky = true;
           break;
         }
@@ -1030,8 +1254,14 @@ class MatchSim {
                   mate.position.index <= CourtPosition.shootingGuard.index
               ? 2.0
               : 0.0;
+      // 속공: 골대 쪽으로 3m 이상 앞서 달리는 동료에게 몰아준다
+      final fastBreakBonus = fastBreakTime > 0 &&
+              mate.pos.distanceTo(basket) < h.pos.distanceTo(basket) - 3
+          ? 2.5
+          : 0.0;
       // 짧은 패스 선호 — 비행 시간이 길수록 레인 점프에 노출된다
-      final score = openness -
+      final score = fastBreakBonus +
+          openness -
           mate.pos.distanceTo(basket) * 0.15 -
           passDist * 0.12 +
           pgCarryBonus +
@@ -1056,10 +1286,11 @@ class MatchSim {
     ball.to.setFrom(target);
     ball.flightTime = 0;
     ball.flightDuration = max(0.4, h.pos.distanceTo(target) / passSpeed);
-    // 빅맨 아웃렛은 수비 머리 위로 넘기는 로브 패스 (높은 궤적)
-    final lob = h.position.index >= CourtPosition.smallForward.index &&
-        h.pos.distanceTo(basket) > 9 &&
-        best.position.index <= CourtPosition.shootingGuard.index;
+    // 로브 패스(높은 궤적): 빅맨 아웃렛, 또는 속공 롱패스
+    final lob = (h.position.index >= CourtPosition.smallForward.index &&
+            h.pos.distanceTo(basket) > 9 &&
+            best.position.index <= CourtPosition.shootingGuard.index) ||
+        (fastBreakTime > 0 && h.pos.distanceTo(target) > 6);
     ball.arcPeak = lob ? 1.2 : 0.5;
     ball.receiverId = best.id;
     ball.interceptTried.clear();
@@ -1067,6 +1298,7 @@ class MatchSim {
     ball.holderId = null;
     ball.z = heldBallHeight; // 몸 높이에서 출발
     ball.phase = BallPhase.pass;
+    lastTouchTeam = h.team;
     lastEvent = 'pass:${best.id}';
   }
 
@@ -1314,6 +1546,25 @@ class MatchSim {
         }
         return basket;
       }
+      // 스크린 세터: 세팅 지점으로 이동 (도착하면 screening 상태로 고정)
+      if (p.id == screenerId && !screenSet && screenTargetId != null) {
+        return _screenSpot(players[screenTargetId!]);
+      }
+      // 속공: 가드/포워드는 앞선으로 질주 (leak out)
+      if (fastBreakTime > 0 &&
+          p.position.index <= CourtPosition.smallForward.index) {
+        final basket = basketOf(offense);
+        final u = 3.5;
+        final x = basket.x < CourtDims.length / 2
+            ? basket.x - CourtDims.basketX + u
+            : basket.x + CourtDims.basketX - u;
+        final y = switch (p.position) {
+          CourtPosition.shootingGuard => 3.0,
+          CourtPosition.smallForward => 12.0,
+          _ => 7.5,
+        };
+        return Vector2(x, y);
+      }
       // 빅맨(비가드)이 볼을 "운반 중"(아직 공격 진영 밖)이면
       // 가드는 탑으로 올라가 받아준다 — 세트 오펜스 진입 후엔 평소 무브
       final h = holder;
@@ -1427,6 +1678,15 @@ class MatchSim {
   /// 존에 들어온 공격수(볼 홀더 최우선)는 존 안에서 맨투맨처럼 따라붙는다.
   Vector2 _defenseTargetFor(SimPlayer p) {
     final basket = basketOf(offense);
+    // 클로즈아웃: 오픈 캐치한 홀더에게 지연 없이 직행
+    if (p.id == closeoutId && holder != null) {
+      final h = holder!;
+      final toBasket = basket - h.pos;
+      if (toBasket.length > 1e-6) {
+        return _clampToCourt(h.pos + toBasket.normalized().scaled(0.6));
+      }
+      return h.pos.clone();
+    }
     // 더블팀 가담자: 존을 버리고 홀더를 직접 압박
     if (p.id == doubleTeamerId && holder != null) {
       final h = holder!;
@@ -1486,13 +1746,19 @@ class MatchSim {
       if (other.id == p.id) {
         continue;
       }
-      // 같은 팀: 스페이싱 유지(1.1m), 상대 팀: 몸싸움 충돌(0.55m).
+      // 같은 팀: 스페이싱 유지(1.1m), 상대 팀: 몸싸움 충돌(0.5m).
       // 상대와 겹쳐 지나갈 수 없으므로 컷/리바운드 진입 무브가
       // 자연스럽게 스크린처럼 수비의 추격 경로를 막는다.
-      final minDist = other.team == p.team ? 1.1 : 0.55;
+      final minDist = other.team == p.team ? 1.1 : 0.5;
       final delta = p.pos - other.pos;
       final distance = delta.length;
       if (distance > 1e-6 && distance < minDist) {
+        // 스크린에 걸림: 세팅된 상대 스크리너와 부딪히면 스턴
+        if (other.team != p.team &&
+            other.state == PlayerState.screening &&
+            !p.inTimedState) {
+          _stun(p);
+        }
         p.pos.add(delta.scaled((minDist - distance) / distance * 0.5));
       }
     }

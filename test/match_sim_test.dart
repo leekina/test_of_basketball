@@ -127,7 +127,6 @@ void main() {
         'shot',
         'layup',
         'windup',
-        'fake',
         'block',
         'bodycheck',
         'intercept',
@@ -136,6 +135,10 @@ void main() {
         'doubleteam',
         'rebound',
         'inbound',
+        'screen',
+        'help',
+        'stun',
+        'outofbounds',
       ]),
     );
   });

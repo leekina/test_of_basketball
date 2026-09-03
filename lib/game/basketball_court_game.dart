@@ -37,6 +37,9 @@ class BasketballCourtGame extends FlameGame {
   late final TextComponent _scoreText;
   bool followBall = true;
 
+  /// 개발용 디버그 패널 표시 여부 (DBG 버튼으로 토글)
+  bool showDebug = true;
+
   @override
   Future<void> onLoad() async {
     final tileset = await CourtTileset.generate();
@@ -80,6 +83,8 @@ class BasketballCourtGame extends FlameGame {
     camera.viewport.add(FollowBallButton());
     camera.viewport.add(ZoneButton(ZoneScheme.twoThree, '2-3', slot: 1));
     camera.viewport.add(ZoneButton(ZoneScheme.threeTwo, '3-2', slot: 0));
+    camera.viewport.add(DebugToggleButton());
+    camera.viewport.add(DebugPanel());
   }
 
   @override
@@ -222,6 +227,114 @@ class FollowBallButton extends PositionComponent
   @override
   void onTapUp(TapUpEvent event) {
     game.followBall = true;
+  }
+}
+
+/// 디버그 패널 토글 버튼 (DBG)
+class DebugToggleButton extends PositionComponent
+    with TapCallbacks, HasGameReference<BasketballCourtGame> {
+  DebugToggleButton()
+      : super(
+          size: Vector2(52, 32),
+          anchor: Anchor.bottomRight,
+          position: Vector2(
+            BasketballCourtGame.viewWidth - 10 - 2 * 58,
+            BasketballCourtGame.viewHeight - 10,
+          ),
+        );
+
+  static final Paint _bgPaint = Paint()..color = const Color(0xCC222831);
+  static final Paint _activeBgPaint = Paint()
+    ..color = const Color(0xCC2E7D32);
+  static final Paint _borderPaint = Paint()
+    ..color = const Color(0x88FFFFFF)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1;
+  static final TextPaint _labelPaint = TextPaint(
+    style: const TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.bold,
+      color: Color(0xFFFFFFFF),
+    ),
+  );
+
+  @override
+  void render(Canvas canvas) {
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, size.x, size.y),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(rect, game.showDebug ? _activeBgPaint : _bgPaint);
+    canvas.drawRRect(rect, _borderPaint);
+    _labelPaint.render(canvas, 'DBG', size / 2, anchor: Anchor.center);
+  }
+
+  @override
+  void onTapUp(TapUpEvent event) {
+    game.showDebug = !game.showDebug;
+  }
+}
+
+/// 개발용 디버그 패널 — 진행 중 시퀀스와 선수 전원의 상태를 표시한다.
+class DebugPanel extends TextComponent
+    with HasGameReference<BasketballCourtGame> {
+  DebugPanel()
+      : super(
+          position: Vector2(8, 40),
+          anchor: Anchor.topLeft,
+          textRenderer: TextPaint(
+            style: const TextStyle(
+              fontSize: 10,
+              height: 1.25,
+              color: Color(0xFFE8F0F8),
+              shadows: [Shadow(color: Color(0xCC000000), blurRadius: 2)],
+            ),
+          ),
+        );
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    final sim = game.sim;
+    if (!game.showDebug) {
+      text = '';
+      return;
+    }
+    final b = sim.ball;
+    final seq = <String>[
+      if (sim.netDropTime > 0) '득점낙하 ${sim.netDropTime.toStringAsFixed(1)}s',
+      if (sim.inbounderId != null)
+        '인바운드 #${sim.inbounderId}→#${sim.inboundReceiverId}',
+      if (sim.fastBreakTime > 0)
+        '속공 ${sim.fastBreakTime.toStringAsFixed(1)}s',
+      if (sim.screenerId != null)
+        '스크린 #${sim.screenerId}→#${sim.screenTargetId}'
+            '${sim.screenSet ? "(셋)" : "(이동중)"}',
+      if (sim.doubleTeamerId != null)
+        '협공/헬프 #${sim.doubleTeamerId} ${sim.doubleTeamTime.toStringAsFixed(1)}s',
+      if (sim.closeoutId != null)
+        '클로즈아웃 #${sim.closeoutId} ${sim.closeoutTime.toStringAsFixed(1)}s',
+    ];
+    final lines = <String>[
+      '공격:${sim.offense.name.toUpperCase()}  볼:${b.phase.name}'
+          '${b.holderId != null ? " 홀더:#${b.holderId} HP:${sim.holderHp}" : ""}'
+          '  샷클락:${sim.shotClock.toStringAsFixed(1)}'
+          '  존:${sim.zoneScheme == ZoneScheme.twoThree ? "2-3" : "3-2"}',
+      if (seq.isNotEmpty) '진행: ${seq.join("  ")}',
+      if (sim.lastEvent != null) '이벤트: ${sim.lastEvent}',
+    ];
+    for (final team in Team.values) {
+      final tag = team == Team.home ? 'H' : 'A';
+      final row = sim
+          .teamOf(team)
+          .map(
+            (p) => '${p.id == b.holderId ? "★" : ""}'
+                '#${p.id}${p.position.shortName}:${p.state.name}',
+          )
+          .join('  ');
+      lines.add('[$tag] $row');
+    }
+    text = lines.join('\n');
   }
 }
 
