@@ -54,3 +54,6 @@ app.*.map.json
 # Generated code
 *.g.dart
 *.freezed.dart
+
+# Golden test failure artifacts
+test/failures/
