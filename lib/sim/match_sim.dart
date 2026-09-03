@@ -18,6 +18,9 @@ enum Team { home, away }
 
 enum BallPhase { held, pass, shot, loose }
 
+/// 지역방어 대형
+enum ZoneScheme { twoThree, threeTwo }
+
 /// 농구 포지션 — 팀 내 인덱스(id % 5) 순서로 배정된다.
 enum CourtPosition {
   pointGuard,
@@ -223,7 +226,7 @@ class MatchSim {
 
   /// 현재 홀더가 공을 잡은 뒤 경과 시간 — 이만큼은 패스하지 않고 버틴다
   double holdTime = 0;
-  static const double minHoldBeforePass = 0.4; // 압박(1초/HP) 전에 탈출 가능
+  static const double minHoldBeforePass = 0.6; // 압박(1초/HP) 전에 탈출 가능
 
   /// 홀더 HP: 수비가 [pressureRadius] 안에 붙어 있으면 1초마다 1씩 깎이고
   /// 0이 되면 그 수비수에게 스틸당한다. 공이 새 홀더에게 갈 때마다 초기화.
@@ -587,6 +590,12 @@ class MatchSim {
       _pressureTime = 0;
       return;
     }
+    // HP 압박은 공격 존(골대 10m 이내)에서만 — 볼 운반 구간에서는
+    // 붙어는 있어도 HP를 깎지 않는다 (운반 중 즉사 방지)
+    if (h.pos.distanceTo(basketOf(offense)) > 10) {
+      _pressureTime = 0;
+      return;
+    }
     SimPlayer? defender;
     var defenderDist = double.infinity;
     for (final d in teamOf(h.team == Team.home ? Team.away : Team.home)) {
@@ -715,10 +724,10 @@ class MatchSim {
     final hpUrgency = 1.0 + (maxHolderHp - holderHp) * 0.8;
     if (pressure < pressureRadius &&
         _rng.nextDouble() <
-            (0.4 * profile.passMul * hpUrgency).clamp(0.0, 0.95)) {
+            (0.3 * profile.passMul * hpUrgency).clamp(0.0, 0.95)) {
       _pass(h);
     } else if (_rng.nextDouble() <
-        (0.05 * profile.passMul * hpUrgency).clamp(0.0, 0.5)) {
+        (0.03 * profile.passMul * hpUrgency).clamp(0.0, 0.5)) {
       _pass(h);
     }
   }
@@ -1031,7 +1040,7 @@ class MatchSim {
       );
     }
     // 패스 비행 중, 리시버 근처의 수비수는 공 궤적 위로 뛰어들어
-    // 인터셉트를 노린다 (롱패스일수록 도달 시간이 길어 위험해짐)
+    // 인터셉트를 노린다 — 단, 자기 존을 벗어나면서까지 쫓지는 않는다
     if (ball.phase == BallPhase.pass &&
         p.team != offense &&
         ball.receiverId != null &&
@@ -1040,9 +1049,11 @@ class MatchSim {
       final len2 = ab.length2;
       if (len2 > 1e-9) {
         final t = ((p.pos - ball.pos).dot(ab) / len2).clamp(0.0, 1.0);
-        return ball.pos + ab * t;
+        final jumpSpot = ball.pos + ab * t;
+        if (jumpSpot.distanceTo(_zoneAnchorFor(p)) <= zoneRadius + 0.8) {
+          return jumpSpot;
+        }
       }
-      return ball.pos.clone();
     }
     if (p.team == offense) {
       if (ball.holderId == p.id) {
@@ -1058,11 +1069,16 @@ class MatchSim {
             toDefender.length < 1.3 &&
             toDefender.length > 1e-6) {
           final away = -toDefender.normalized();
-          // HP 1: 최후 수단 — 뒤로 완전히 빠져 접촉을 끊는다
+          // HP 1: 최후 수단 — 뒤로 빠져 접촉을 끊되, 하프라인 뒤로
+          // 도망가지는 않는다 (프론트코트 안에서만 후퇴)
           if (holderHp <= 1) {
-            return _clampToCourt(p.pos + away.scaled(2.5));
+            final escape = _clampToCourt(p.pos + away.scaled(2.5));
+            if (escape.distanceTo(basketOf(offense)) <= 13) {
+              return escape;
+            }
+            // 더 물러날 곳이 없으면 측면 회피로 전환
           }
-          // HP 2: 측면 회피 — 전진 자세를 유지한 채 옆으로 흘러나간다
+          // HP 2 (또는 후퇴 공간 없음): 측면 회피 — 전진 자세 유지
           final basket = basketOf(offense);
           final toBasketDir = (basket - p.pos)..normalize();
           final perpA = Vector2(away.y, -away.x);
@@ -1150,10 +1166,70 @@ class MatchSim {
   /// 공격의 방향 전환/컷이 실제 분리를 만드는 근거.
   static const double defenseReactionDelay = 0.3;
 
+  /// 지역방어 존 앵커 프리셋 — 수비 골대 기준 (u: 베이스라인 거리, y)
+  static const Map<ZoneScheme, Map<CourtPosition, (double, double)>>
+      zoneAnchorPresets = {
+    // 2-3: 가드 둘이 위, 포워드·센터 셋이 아래
+    ZoneScheme.twoThree: {
+      CourtPosition.pointGuard: (6.8, 5.2),
+      CourtPosition.shootingGuard: (6.8, 9.8),
+      CourtPosition.smallForward: (2.4, 3.6),
+      CourtPosition.powerForward: (2.4, 11.4),
+      CourtPosition.center: (2.4, 7.5),
+    },
+    // 3-2: 셋이 위(외곽 압박), 빅맨 둘이 아래
+    ZoneScheme.threeTwo: {
+      CourtPosition.pointGuard: (7.6, 7.5),
+      CourtPosition.shootingGuard: (6.6, 3.5),
+      CourtPosition.smallForward: (6.6, 11.5),
+      CourtPosition.powerForward: (2.3, 5.3),
+      CourtPosition.center: (2.3, 9.7),
+    },
+  };
+
+  /// 현재 지역방어 대형 — 런타임에 전환 가능 (감독 지시)
+  ZoneScheme zoneScheme = ZoneScheme.twoThree;
+
+  /// 존 담당 반경 — 이 안에 들어온 공격수를 따라붙고, 나가면 놓아준다
+  static const double zoneRadius = 3.8;
+
+  Vector2 _zoneAnchorFor(SimPlayer p) {
+    final (u, y) = zoneAnchorPresets[zoneScheme]![p.position]!;
+    final basket = basketOf(offense); // 지키는 골대
+    final x = basket.x < CourtDims.length / 2
+        ? basket.x - CourtDims.basketX + u
+        : basket.x + CourtDims.basketX - u;
+    return Vector2(x, y);
+  }
+
+  /// 지역방어: 기본은 존 앵커를 지키고(볼 쪽으로 살짝 쉐이드),
+  /// 존에 들어온 공격수(볼 홀더 최우선)는 존 안에서 맨투맨처럼 따라붙는다.
   Vector2 _defenseTargetFor(SimPlayer p) {
-    final mark = players.firstWhere(
-      (o) => o.team != p.team && o.id % 5 == p.id % 5,
-    );
+    final basket = basketOf(offense);
+    final zoneCenter = _zoneAnchorFor(p);
+
+    SimPlayer? mark;
+    var bestScore = double.infinity;
+    for (final o in teamOf(offense)) {
+      final dist = o.pos.distanceTo(zoneCenter);
+      if (dist > zoneRadius) {
+        continue;
+      }
+      // 볼 홀더가 내 존에 있으면 무조건 그를 막는다
+      final score = ball.holderId == o.id ? dist - 100 : dist;
+      if (score < bestScore) {
+        bestScore = score;
+        mark = o;
+      }
+    }
+
+    if (mark == null) {
+      // 빈 존: 자리를 지키며 공 방향으로 반 발짝 쉐이드
+      return _clampToCourt(
+        zoneCenter + (ball.pos - zoneCenter).scaled(0.15),
+      );
+    }
+
     // 지연된 인식: 0.3초마다만 마크의 실제 위치를 확인
     p.markSnapTimer -= dt;
     if (p.markSnapTimer <= 0) {
@@ -1161,27 +1237,16 @@ class MatchSim {
       p.perceivedMarkPos.setFrom(mark.pos);
     }
     final markPos = p.perceivedMarkPos;
-    final basket = basketOf(offense);
-    // 하프코트 디펜스: 마크가 "백코트"(하프라인 밖, 14m)에 있을 때만
-    // 물러나 길목에서 대기하고, 하프라인을 넘어오면 끝까지 붙는다
-    final markToBasket = markPos.distanceTo(basket);
-    if (markToBasket > CourtDims.length / 2) {
-      final dir = markPos - basket;
-      if (dir.length > 1e-6) {
-        return _clampToCourt(basket + dir.normalized().scaled(11));
-      }
-    }
     final toBasket = basket - markPos;
     final len = toBasket.length;
     if (len < 1e-6) {
       return markPos.clone();
     }
-    // 항상 마크와 림 사이에 선다. 볼 핸들러 마크는 바짝(압박),
-    // 오프볼은 포지션 성향대로 (C 는 드롭 커버리지로 골밑 사그)
+    // 항상 마크와 림 사이. 볼 핸들러는 바짝(압박), 오프볼은 성향대로
     final standOff = ball.holderId == mark.id
         ? 0.6
         : profileOf(p).defenseStandoff;
-    return markPos + toBasket.scaled(standOff / len);
+    return _clampToCourt(markPos + toBasket.scaled(standOff / len));
   }
 
   void _separate(SimPlayer p) {

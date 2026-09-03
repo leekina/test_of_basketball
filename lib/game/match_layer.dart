@@ -60,22 +60,9 @@ class MatchLayer extends Component {
       sim.tick();
       _snapshot(_currPos, _currBall);
       _currBallZ = sim.ball.z;
-      _reactToEvent();
     }
     final alpha = (_accumulator / MatchSim.dt).clamp(0.0, 1.0);
     _applyInterpolated(alpha);
-  }
-
-  /// 이벤트 연출: 슛/레이업 릴리즈 시 슈터 점프 (블락 점프는 시뮬 상태 기반)
-  void _reactToEvent() {
-    final e = sim.lastEvent;
-    if (e == null || !(e.startsWith('shot') || e.startsWith('layup'))) {
-      return;
-    }
-    final shooterId = sim.lastShooterId;
-    if (shooterId != null) {
-      _playerComps[shooterId].jump();
-    }
   }
 
   /// 발밑 상태 라벨 (한국어)
@@ -127,11 +114,17 @@ class MatchLayer extends Component {
       comp.hasBall = sim.ball.holderId == p.id;
       comp.holderHp = sim.holderHp;
       comp.stateLabel = _labelFor(p);
+      // 점프 곡선: 블락/리바운드/슈팅 모션(페이크 포함 — 겉모습 동일해야
+      // 낚시가 성립) 모두 시뮬 상태 타이머에서 유도한다
       comp.blockProgress = switch (p.state) {
         PlayerState.blocking =>
           1 - (p.stateTimer / MatchSim.blockDuration).clamp(0.0, 1.0),
         PlayerState.rebounding =>
           1 - (p.stateTimer / MatchSim.reboundJumpDuration).clamp(0.0, 1.0),
+        PlayerState.windup =>
+          1 - (p.stateTimer / MatchSim.windupDuration).clamp(0.0, 1.0),
+        PlayerState.faking =>
+          1 - (p.stateTimer / MatchSim.fakeDuration).clamp(0.0, 1.0),
         _ => -1.0,
       };
       comp.showDefenseRange = p.state == PlayerState.defending;

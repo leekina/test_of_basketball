@@ -28,8 +28,9 @@ class BasketballCourtGame extends FlameGame {
         );
 
   /// 가상 해상도 — 맵보다 작아 일부만 보이고 패닝으로 이동한다.
-  static const double viewWidth = 640;
-  static const double viewHeight = 360;
+  /// (크게 잡을수록 카메라가 뒤로 빠진 느낌 — 코트가 더 넓게 보인다)
+  static const double viewWidth = 880;
+  static const double viewHeight = 495;
 
   final MatchSim sim;
   late final CourtMapComponent courtMap;
@@ -75,6 +76,10 @@ class BasketballCourtGame extends FlameGame {
         position: Vector2(8, viewHeight - 6),
       ),
     );
+
+    camera.viewport.add(FollowBallButton());
+    camera.viewport.add(ZoneButton(ZoneScheme.twoThree, '2-3', slot: 1));
+    camera.viewport.add(ZoneButton(ZoneScheme.threeTwo, '3-2', slot: 0));
   }
 
   @override
@@ -162,5 +167,109 @@ class CourtMapComponent extends IsometricTileMapComponent
   @override
   void onDoubleTapUp(DoubleTapEvent event) {
     game.followBall = true;
+  }
+}
+
+/// 수동 패닝 중일 때 우하단에 뜨는 "공 따라가기" 버튼.
+class FollowBallButton extends PositionComponent
+    with TapCallbacks, HasGameReference<BasketballCourtGame> {
+  FollowBallButton()
+      : super(
+          size: Vector2(112, 34),
+          anchor: Anchor.bottomRight,
+          position: Vector2(
+            BasketballCourtGame.viewWidth - 10,
+            BasketballCourtGame.viewHeight - 52, // 존 버튼 위
+          ),
+        );
+
+  static final Paint _bgPaint = Paint()..color = const Color(0xCC222831);
+  static final Paint _borderPaint = Paint()
+    ..color = const Color(0xFFFFE066)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.5;
+  static final TextPaint _labelPaint = TextPaint(
+    style: const TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.bold,
+      color: Color(0xFFFFE066),
+    ),
+  );
+
+  @override
+  bool containsLocalPoint(Vector2 point) =>
+      !game.followBall && super.containsLocalPoint(point);
+
+  @override
+  void render(Canvas canvas) {
+    if (game.followBall) {
+      return; // 이미 추적 중이면 숨김
+    }
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, size.x, size.y),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(rect, _bgPaint);
+    canvas.drawRRect(rect, _borderPaint);
+    _labelPaint.render(
+      canvas,
+      '📷 공 따라가기',
+      size / 2,
+      anchor: Anchor.center,
+    );
+  }
+
+  @override
+  void onTapUp(TapUpEvent event) {
+    game.followBall = true;
+  }
+}
+
+/// 우하단 지역방어 대형 전환 버튼 (2-3 / 3-2) — 언제든 탭으로 변경.
+class ZoneButton extends PositionComponent
+    with TapCallbacks, HasGameReference<BasketballCourtGame> {
+  ZoneButton(this.scheme, this.label, {required int slot})
+      : super(
+          size: Vector2(52, 32),
+          anchor: Anchor.bottomRight,
+          position: Vector2(
+            BasketballCourtGame.viewWidth - 10 - slot * 58,
+            BasketballCourtGame.viewHeight - 10,
+          ),
+        );
+
+  final ZoneScheme scheme;
+  final String label;
+
+  static final Paint _bgPaint = Paint()..color = const Color(0xCC222831);
+  static final Paint _activeBgPaint = Paint()
+    ..color = const Color(0xCC3D6BFF);
+  static final Paint _borderPaint = Paint()
+    ..color = const Color(0x88FFFFFF)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1;
+  static final TextPaint _labelPaint = TextPaint(
+    style: const TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.bold,
+      color: Color(0xFFFFFFFF),
+    ),
+  );
+
+  @override
+  void render(Canvas canvas) {
+    final active = game.sim.zoneScheme == scheme;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(0, 0, size.x, size.y),
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(rect, active ? _activeBgPaint : _bgPaint);
+    canvas.drawRRect(rect, _borderPaint);
+    _labelPaint.render(canvas, label, size / 2, anchor: Anchor.center);
+  }
+
+  @override
+  void onTapUp(TapUpEvent event) {
+    game.sim.zoneScheme = scheme;
   }
 }
