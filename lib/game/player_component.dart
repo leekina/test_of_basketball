@@ -11,10 +11,17 @@ import 'iso_projection.dart';
 /// 머리 위: 홀더 HP 칸 / 발밑: 현재 상태 라벨.
 /// position은 바닥 접지점(발 위치).
 class PlayerComponent extends PositionComponent {
-  PlayerComponent({required this.team, required this.number});
+  PlayerComponent({
+    required this.team,
+    required this.number,
+    required this.positionName,
+  });
 
   final Team team;
   final int number;
+
+  /// 포지션 약칭 (PG/SG/SF/PF/C) — 유니폼에 표시
+  final String positionName;
 
   /// 현재 볼 소유자 표시용 링 (MatchLayer가 매 프레임 갱신)
   bool hasBall = false;
@@ -78,7 +85,7 @@ class PlayerComponent extends PositionComponent {
     ..strokeWidth = 2;
   late final TextPaint _numberPaint = TextPaint(
     style: const TextStyle(
-      fontSize: 9,
+      fontSize: 7,
       fontWeight: FontWeight.bold,
       color: Color(0xFFFFFFFF),
     ),
@@ -154,10 +161,10 @@ class PlayerComponent extends PositionComponent {
       _headRadius,
       _headPaint,
     );
-    // 등번호
+    // 포지션 약칭 (유니폼)
     _numberPaint.render(
       canvas,
-      '$number',
+      positionName,
       Vector2(0, -_bodyHeight / 2 - 2),
       anchor: Anchor.center,
     );

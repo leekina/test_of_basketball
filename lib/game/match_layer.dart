@@ -33,7 +33,11 @@ class MatchLayer extends Component {
   @override
   Future<void> onLoad() async {
     for (final p in sim.players) {
-      final comp = PlayerComponent(team: p.team, number: p.id % 5 + 1);
+      final comp = PlayerComponent(
+        team: p.team,
+        number: p.id % 5 + 1,
+        positionName: p.position.shortName,
+      );
       _playerComps.add(comp);
       add(comp);
       _prevPos.add(p.pos.clone());

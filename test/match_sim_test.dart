@@ -135,6 +135,41 @@ void main() {
     );
   });
 
+  test('포지션 배정: 양팀 모두 PG/SG/SF/PF/C', () {
+    final sim = MatchSim(seed: 1);
+    for (final team in Team.values) {
+      final positions =
+          sim.teamOf(team).map((p) => p.position).toList();
+      expect(positions, CourtPosition.values);
+    }
+    expect(MatchSim.positionProfiles.length, 5);
+  });
+
+  test('포지션 성향: 센터는 슈팅가드보다 림 근처에서 쏜다', () {
+    final sim = MatchSim(seed: 42);
+    final distsByPos = <CourtPosition, List<double>>{};
+    for (var i = 0; i < 9000; i++) {
+      sim.tick();
+      final e = sim.lastEvent;
+      if (e == null || !(e.startsWith('shot') || e.startsWith('layup'))) {
+        continue;
+      }
+      final shooter = sim.players[sim.lastShooterId!];
+      final dist =
+          sim.ball.from.distanceTo(sim.basketOf(shooter.team));
+      distsByPos.putIfAbsent(shooter.position, () => []).add(dist);
+    }
+    double avg(CourtPosition p) {
+      final list = distsByPos[p] ?? const [0.0];
+      return list.reduce((a, b) => a + b) / list.length;
+    }
+
+    expect(avg(CourtPosition.center),
+        lessThan(avg(CourtPosition.shootingGuard)),
+        reason: 'C 평균 슛거리 ${avg(CourtPosition.center)} vs '
+            'SG ${avg(CourtPosition.shootingGuard)}');
+  });
+
   test('스틸 직후 홀더 HP는 초기화된다', () {
     for (final seed in [1, 42, 777]) {
       final sim = MatchSim(seed: seed);

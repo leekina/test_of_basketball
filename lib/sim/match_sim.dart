@@ -18,6 +18,75 @@ enum Team { home, away }
 
 enum BallPhase { held, pass, shot, loose }
 
+/// 농구 포지션 — 팀 내 인덱스(id % 5) 순서로 배정된다.
+enum CourtPosition {
+  pointGuard,
+  shootingGuard,
+  smallForward,
+  powerForward,
+  center;
+
+  String get shortName =>
+      const ['PG', 'SG', 'SF', 'PF', 'C'][index];
+}
+
+/// 포지션별 행동 파라미터 (능력치가 아니라 역할 성향).
+/// 데이터 테이블로 분리 — AI 튜닝 루프가 수치만 바꿀 수 있게.
+class PositionProfile {
+  const PositionProfile({
+    required this.anchor,
+    this.shootMul = 1,
+    this.passMul = 1,
+    this.layupChance = 0.3,
+    this.maxShotDist = 7.4,
+    this.cutChance = 0.03,
+    this.reboundWeight = 1,
+    this.blockProb = 0.35,
+    this.defenseStandoff = 0.6,
+    this.crashesBoards = false,
+    this.arcRelocate = false,
+    this.wanderIntervalMin = 1.5,
+    this.wanderIntervalMax = 4.0,
+  });
+
+  /// 공격 앵커 (u: 공격 골대 베이스라인에서의 거리, y)
+  final (double, double) anchor;
+
+  /// 슛 시도 확률 배율
+  final double shootMul;
+
+  /// 패스 시도 확률 배율
+  final double passMul;
+
+  /// 림 근처 레이업 시도 확률 (틱당)
+  final double layupChance;
+
+  /// 이 거리 밖에서는 (강제 상황 제외) 슛을 쏘지 않는다
+  final double maxShotDist;
+
+  /// 골밑 컷 발동 확률 (틱당)
+  final double cutChance;
+
+  /// 루즈볼 추격 거리 가중치 — 낮을수록 리바운드에 적극적
+  final double reboundWeight;
+
+  /// 슈팅 모션에 대한 블락 점프 반응 확률 (틱당)
+  final double blockProb;
+
+  /// 오프볼 수비 시 마크와의 간격 (크면 골밑 사그/드롭 커버리지)
+  final double defenseStandoff;
+
+  /// 슛이 뜨면 림으로 리바운드 진입하는가 (PF/C)
+  final bool crashesBoards;
+
+  /// 3점 라인을 따라 오픈 지점으로 계속 이동하는가 (SG)
+  final bool arcRelocate;
+
+  /// 배회 지점 재추첨 주기 — 짧을수록 쉬지 않고 움직인다
+  final double wanderIntervalMin;
+  final double wanderIntervalMax;
+}
+
 /// 선수 상태 머신. 렌더 표시와 상호작용 판정 양쪽이 사용한다.
 /// - dribbling: 볼 소유, 드리블 (수비 밀착 시 HP 깎임)
 /// - windup: 슈팅 준비 모션 (0.5초 후 릴리즈, 수비 블락 유발)
@@ -42,6 +111,9 @@ class SimPlayer {
   final int id;
   final Team team;
   final Vector2 pos;
+
+  /// 팀 내 인덱스로 결정되는 포지션 (0=PG .. 4=C)
+  CourtPosition get position => CourtPosition.values[id % 5];
 
   // 오프볼 무브 상태 (공격 시)
   final Vector2 wander = Vector2.zero(); // 앵커 주변 배회 오프셋
@@ -243,7 +315,7 @@ class MatchSim {
     }
     if (ball.phase == BallPhase.loose &&
         (ball.looseFor == null || ball.looseFor == p.team) &&
-        _nearestOf(teamOf(p.team), ball.pos).id == p.id) {
+        _looseChaserOf(p.team).id == p.id) {
       return PlayerState.chasing;
     }
     if (p.team == offense) {
@@ -253,6 +325,7 @@ class MatchSim {
   }
 
   /// 슈팅 준비(또는 페이크) 모션에 가장 가까운 수비수가 블락 점프로 반응.
+  /// 슈터와 림 사이(앞쪽)에 있는 수비수만 반응한다 — 등 뒤 블락은 없다.
   /// 페이크에 낚인 수비수는 점프 후반이라 진짜 슛 릴리즈를 컨테스트 못 한다.
   void _tryBlockReactions() {
     final shooter = holder;
@@ -261,12 +334,17 @@ class MatchSim {
             shooter.state != PlayerState.faking)) {
       return;
     }
+    final toBasket = basketOf(offense) - shooter.pos;
     SimPlayer? nearest;
     var nearestDist = double.infinity;
     for (final d in teamOf(
       shooter.team == Team.home ? Team.away : Team.home,
     )) {
       if (d.state != PlayerState.defending) {
+        continue;
+      }
+      // 림과 슈터 사이에 있는 수비수만 (등 뒤에서는 블락 불가)
+      if (toBasket.dot(d.pos - shooter.pos) <= 0) {
         continue;
       }
       final dist = d.pos.distanceTo(shooter.pos);
@@ -277,11 +355,26 @@ class MatchSim {
     }
     if (nearest != null &&
         nearestDist < blockRadius &&
-        _rng.nextDouble() < 0.35) {
+        _rng.nextDouble() < profileOf(nearest).blockProb) {
       nearest.state = PlayerState.blocking;
       nearest.stateTimer = blockDuration;
       lastEvent = 'block:${nearest.id}';
     }
+  }
+
+  /// 리바운드 가중치를 적용한 루즈볼 추격자 선정 (PF/C 가 우선)
+  SimPlayer _looseChaserOf(Team t) {
+    late SimPlayer best;
+    var bestScore = double.infinity;
+    for (final p in teamOf(t)) {
+      final score =
+          p.pos.distanceTo(ball.pos) * profileOf(p).reboundWeight;
+      if (score < bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best;
   }
 
   void tick() {
@@ -495,8 +588,10 @@ class MatchSim {
       _startWindup(h, distToBasket);
       return;
     }
-    // 림 근처: 레이업 적극 시도
-    if (distToBasket <= layupRange && _rng.nextDouble() < 0.3) {
+    final profile = profileOf(h);
+    // 림 근처: 레이업 적극 시도 (빅맨일수록 적극)
+    if (distToBasket <= layupRange &&
+        _rng.nextDouble() < profile.layupChance) {
       _startWindup(h, distToBasket);
       return;
     }
@@ -511,13 +606,16 @@ class MatchSim {
       return;
     }
     // 슛 셀렉션: 오픈이면 적극적으로 쏘고(캐치&슛),
-    // 밀착당했으면 무리슛 대신 페이크로 공간을 만든다
-    if (distToBasket < shootRange) {
-      if (pressure > 1.5 && _rng.nextDouble() < 0.45) {
+    // 밀착당했으면 무리슛 대신 페이크로 공간을 만든다.
+    // 포지션 성향: SG 는 자주 쏘고, PG 는 아끼고, 빅맨은 사거리 제한.
+    if (distToBasket < shootRange && distToBasket <= profile.maxShotDist) {
+      if (pressure > 1.5 &&
+          _rng.nextDouble() < 0.45 * profile.shootMul) {
         _startWindup(h, distToBasket); // 오픈 슛
         return;
       }
-      if (pressure > 1.0 && _rng.nextDouble() < 0.08) {
+      if (pressure > 1.0 &&
+          _rng.nextDouble() < 0.08 * profile.shootMul) {
         _startWindup(h, distToBasket); // 세미오픈
         return;
       }
@@ -532,10 +630,12 @@ class MatchSim {
     if (holdTime < minHoldBeforePass) {
       return;
     }
-    // 압박당하면(HP 깎이는 중) 적극적으로 탈출 패스, 아니어도 종종 볼 순환
-    if (pressure < pressureRadius && _rng.nextDouble() < 0.35) {
+    // 압박당하면(HP 깎이는 중) 적극적으로 탈출 패스, 아니어도 종종 볼 순환.
+    // PG 는 배급 역할이라 더 자주 돌린다.
+    if (pressure < pressureRadius &&
+        _rng.nextDouble() < (0.35 * profile.passMul).clamp(0.0, 0.9)) {
       _pass(h);
-    } else if (_rng.nextDouble() < 0.025) {
+    } else if (_rng.nextDouble() < 0.025 * profile.passMul) {
       _pass(h);
     }
   }
@@ -561,12 +661,14 @@ class MatchSim {
   void _releaseShot(SimPlayer h) {
     final basket = basketOf(offense);
     final dist = h.pos.distanceTo(basket);
+    // 이번 모션 중에 뛴, 슈터와 림 사이의 블락만 컨테스트로 친다
     final contested = players.any(
       (d) =>
           d.team != h.team &&
           d.state == PlayerState.blocking &&
           d.stateTimer >= blockDuration - _currentWindup &&
-          d.pos.distanceTo(h.pos) < blockRadius,
+          d.pos.distanceTo(h.pos) < blockRadius &&
+          (basket - h.pos).dot(d.pos - h.pos) > 0,
     );
     final layup = dist <= layupRange;
     ball.from.setFrom(h.pos);
@@ -626,11 +728,24 @@ class MatchSim {
       // 롱패스일수록 수비가 궤적에 뛰어들 시간이 길다 —
       // 패스 거리에 비례한 분리(오픈) 요구치를 못 넘기면 그 패스는 버린다
       final passDist = h.pos.distanceTo(mate.pos);
-      if (openness < 1.0 + 0.15 * passDist) {
+      if (openness < 0.8 + 0.12 * passDist) {
         continue;
       }
-      // 오픈 정도 우선 + 골대에 가까울수록 약간 가산
-      final score = openness - mate.pos.distanceTo(basket) * 0.15;
+      // 오픈 정도 우선 + 골대에 가까울수록 약간 가산.
+      // 백코트(볼 운반 구간)에서는 PG 에게 우선적으로 맡긴다.
+      final pgCarryBonus = h.pos.distanceTo(basket) > 14 &&
+              mate.position == CourtPosition.pointGuard
+          ? 3.0
+          : 0.0;
+      // 포스트 엔트리: 골밑에서 오픈된 빅맨에게 우선 투입 (레이업 찬스)
+      final postEntryBonus =
+          profileOf(mate).crashesBoards && mate.pos.distanceTo(basket) < 5
+              ? 1.2
+              : 0.0;
+      final score = openness -
+          mate.pos.distanceTo(basket) * 0.15 +
+          pgCarryBonus +
+          postEntryBonus;
       if (score > bestScore) {
         bestScore = score;
         best = mate;
@@ -660,15 +775,61 @@ class MatchSim {
 
   // ---------------- 이동 ----------------
 
-  /// 공격 포메이션 앵커 (공격 골대 기준 u = 베이스라인에서의 거리)
-  /// 5-아웃 스페이싱: 윙 3점 x2 + 탑 3점 + 덩커 스팟 x2
-  static const List<(double, double)> _anchors = [
-    (7.3, 3.0), // 윙 3점
-    (7.3, 12.0), // 윙 3점
-    (8.7, 7.5), // 탑 3점
-    (1.5, 4.2), // 덩커 스팟
-    (1.5, 10.8), // 덩커 스팟
-  ];
+  /// 포지션별 역할 프로파일 (앵커·성향).
+  /// PG: 탑에서 볼 운반·배급 / SG: 3점 라인 오픈 이동 /
+  /// SF: 미드레인지에서 수비 흔들기 / PF·C: 골밑·리바운드.
+  static const Map<CourtPosition, PositionProfile> positionProfiles = {
+    CourtPosition.pointGuard: PositionProfile(
+      anchor: (8.7, 7.5), // 탑
+      shootMul: 0.7,
+      passMul: 1.6,
+      cutChance: 0.012,
+      reboundWeight: 1.15,
+      blockProb: 0.25,
+    ),
+    CourtPosition.shootingGuard: PositionProfile(
+      anchor: (7.3, 3.0), // 윙 3점
+      shootMul: 1.3,
+      passMul: 0.9,
+      cutChance: 0.015,
+      reboundWeight: 1.1,
+      blockProb: 0.25,
+      arcRelocate: true,
+      wanderIntervalMin: 0.8,
+      wanderIntervalMax: 2.0,
+    ),
+    CourtPosition.smallForward: PositionProfile(
+      anchor: (5.0, 12.0), // 미드레인지 윙
+      shootMul: 1.1,
+      maxShotDist: 6.6,
+      cutChance: 0.05,
+      wanderIntervalMin: 1.0,
+      wanderIntervalMax: 2.5,
+    ),
+    CourtPosition.powerForward: PositionProfile(
+      anchor: (1.5, 4.2), // 덩커 스팟
+      shootMul: 0.9,
+      layupChance: 0.4,
+      maxShotDist: 5.0,
+      cutChance: 0.04,
+      reboundWeight: 0.8,
+      blockProb: 0.45,
+      crashesBoards: true,
+    ),
+    CourtPosition.center: PositionProfile(
+      anchor: (1.5, 10.8), // 로우포스트
+      shootMul: 0.8,
+      layupChance: 0.45,
+      maxShotDist: 4.2,
+      cutChance: 0.035,
+      reboundWeight: 0.7,
+      blockProb: 0.5,
+      defenseStandoff: 1.5, // 드롭 커버리지
+      crashesBoards: true,
+    ),
+  };
+
+  PositionProfile profileOf(SimPlayer p) => positionProfiles[p.position]!;
 
   /// 오프볼 공격수의 배회/컷 상태 갱신 (매 틱, 시드 RNG)
   void _updateOffBallState() {
@@ -678,10 +839,13 @@ class MatchSim {
         p.cutTime = 0;
         continue;
       }
-      // 앵커 주변 배회 지점을 주기적으로 재추첨
+      // 앵커 주변 배회 지점을 주기적으로 재추첨 (주기·컷은 포지션 성향)
+      final profile = profileOf(p);
       p.wanderTimer -= dt;
       if (p.wanderTimer <= 0) {
-        p.wanderTimer = 1.5 + _rng.nextDouble() * 2.5;
+        p.wanderTimer = profile.wanderIntervalMin +
+            _rng.nextDouble() *
+                (profile.wanderIntervalMax - profile.wanderIntervalMin);
         final angle = _rng.nextDouble() * 2 * pi;
         final radius = 0.5 + _rng.nextDouble() * 1.8;
         p.wander.setValues(cos(angle) * radius, sin(angle) * radius);
@@ -695,7 +859,7 @@ class MatchSim {
       if (closestDef.pos.distanceTo(p.pos) < 0.9 && p.wanderTimer > 0.6) {
         p.wanderTimer = 0.5 + _rng.nextDouble() * 0.6;
         final angle = _rng.nextDouble() * 2 * pi;
-        final radius = 1.5 + _rng.nextDouble() * 1.8;
+        final radius = 2.0 + _rng.nextDouble() * 2.0;
         p.wander.setValues(cos(angle) * radius, sin(angle) * radius);
       }
       // 골밑 컷: 쿨다운이 돌면 낮은 확률로 발동
@@ -703,7 +867,7 @@ class MatchSim {
         p.cutTime -= dt;
       } else {
         p.cutCooldown -= dt;
-        if (p.cutCooldown <= 0 && _rng.nextDouble() < 0.03) {
+        if (p.cutCooldown <= 0 && _rng.nextDouble() < profile.cutChance) {
           p.cutTime = 1.6;
           p.cutCooldown = 4 + _rng.nextDouble() * 5;
         }
@@ -735,13 +899,21 @@ class MatchSim {
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
       return ball.to.clone();
     }
-    // 루즈볼: 주울 수 있는 팀에서 가장 가까운 선수가 공으로
+    // 루즈볼: 리바운드 가중치(PF/C 우선)로 뽑힌 선수가 공으로
     if (ball.phase == BallPhase.loose &&
         (ball.looseFor == null || ball.looseFor == p.team)) {
-      final chaser = _nearestOf(teamOf(p.team), ball.pos);
-      if (chaser.id == p.id) {
+      if (_looseChaserOf(p.team).id == p.id) {
         return ball.pos.clone();
       }
+    }
+    // 슛이 뜨면 PF/C 는 양팀 모두 림으로 리바운드 진입 (박스아웃 자리)
+    if (ball.phase == BallPhase.shot && profileOf(p).crashesBoards) {
+      final rim = basketOf(offense);
+      final toCenter = rim.x < CourtDims.length / 2 ? 1.0 : -1.0;
+      final side = p.position == CourtPosition.center ? 1.0 : -1.0;
+      return _clampToCourt(
+        Vector2(rim.x + toCenter * 1.4, rim.y + side * 1.2),
+      );
     }
     // 패스 비행 중, 리시버 근처의 수비수는 공 궤적 위로 뛰어들어
     // 인터셉트를 노린다 (롱패스일수록 도달 시간이 길어 위험해짐)
@@ -809,27 +981,35 @@ class MatchSim {
           target.add(escape.normalized()..scale(2.0 - defDist));
         }
       }
+      // SG: 항상 3점 라인 근처에 머문다 — 목표 지점을 아크 반경으로 보정
+      if (profileOf(p).arcRelocate) {
+        final basket = basketOf(offense);
+        final radial = target - basket;
+        if (radial.length > 1e-6) {
+          final clamped = radial.length.clamp(6.9, 7.6);
+          return _clampToCourt(basket + radial.normalized().scaled(clamped));
+        }
+      }
       return target;
     }
     return _defenseTargetFor(p);
   }
 
   Vector2 _anchorFor(SimPlayer p) {
-    final indexInTeam = p.id % 5;
-    final (u, y) = _anchors[indexInTeam];
+    final (u, y) = profileOf(p).anchor;
     final x = offense == Team.home ? CourtDims.length - u : u;
     return Vector2(x, y);
   }
 
   /// 수비 반응 지연 시간 — 이 간격으로만 마크 위치를 갱신해 쫓는다.
   /// 공격의 방향 전환/컷이 실제 분리를 만드는 근거.
-  static const double defenseReactionDelay = 0.4;
+  static const double defenseReactionDelay = 0.3;
 
   Vector2 _defenseTargetFor(SimPlayer p) {
     final mark = players.firstWhere(
       (o) => o.team != p.team && o.id % 5 == p.id % 5,
     );
-    // 지연된 인식: 0.4초마다만 마크의 실제 위치를 확인
+    // 지연된 인식: 0.3초마다만 마크의 실제 위치를 확인
     p.markSnapTimer -= dt;
     if (p.markSnapTimer <= 0) {
       p.markSnapTimer = defenseReactionDelay;
@@ -851,8 +1031,11 @@ class MatchSim {
     if (len < 1e-6) {
       return markPos.clone();
     }
-    // 볼 핸들러를 마크 중이면 바짝 붙어 압박 (HP 깎기), 오프볼도 밀착 마크
-    final standOff = ball.holderId == mark.id ? 0.45 : 0.6;
+    // 항상 마크와 림 사이에 선다. 볼 핸들러 마크는 바짝(압박),
+    // 오프볼은 포지션 성향대로 (C 는 드롭 커버리지로 골밑 사그)
+    final standOff = ball.holderId == mark.id
+        ? 0.45
+        : profileOf(p).defenseStandoff;
     return markPos + toBasket.scaled(standOff / len);
   }
 
