@@ -56,9 +56,39 @@ class MatchLayer extends Component {
       sim.tick();
       _snapshot(_currPos, _currBall);
       _currBallZ = sim.ball.z;
+      _reactToEvent();
     }
     final alpha = (_accumulator / MatchSim.dt).clamp(0.0, 1.0);
     _applyInterpolated(alpha);
+  }
+
+  /// 이벤트 연출: 슛이 뜨면 슈터와 최근접 수비수가 점프 (점프샷/컨테스트)
+  void _reactToEvent() {
+    final e = sim.lastEvent;
+    if (e == null || !e.startsWith('shot')) {
+      return;
+    }
+    final shooterId = sim.lastShooterId;
+    if (shooterId == null) {
+      return;
+    }
+    final shooter = sim.players[shooterId];
+    _playerComps[shooterId].jump();
+    SimPlayer? contester;
+    var best = double.infinity;
+    for (final d in sim.players) {
+      if (d.team == shooter.team) {
+        continue;
+      }
+      final dist = d.pos.distanceTo(shooter.pos);
+      if (dist < best) {
+        best = dist;
+        contester = d;
+      }
+    }
+    if (contester != null && best < 2.5) {
+      _playerComps[contester.id].jump();
+    }
   }
 
   void _snapshot(List<Vector2> posOut, Vector2 ballOut) {
@@ -77,6 +107,7 @@ class MatchLayer extends Component {
       comp.priority = iso.depthOf(x, y);
       comp.hasBall = sim.ball.holderId == sim.players[i].id;
       comp.activity = sim.activityOf(sim.players[i]);
+      comp.holderHp = sim.holderHp;
     }
 
     final bx = _lerp(_prevBall.x, _currBall.x, alpha);

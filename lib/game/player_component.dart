@@ -1,9 +1,11 @@
+import 'dart:math' as math;
 import 'dart:ui' hide TextStyle;
 
 import 'package:flame/components.dart';
 import 'package:flutter/painting.dart' show FontWeight, TextStyle;
 
 import '../sim/match_sim.dart';
+import 'iso_projection.dart';
 
 /// 플레이스홀더 선수 — 팀 컬러 캡슐 + 그림자 + 등번호.
 /// position은 바닥 접지점(발 위치), 스프라이트 교체를 대비해 anchor 개념은
@@ -19,6 +21,33 @@ class PlayerComponent extends PositionComponent {
 
   /// 행동 상태 배지 (MatchLayer가 매 프레임 갱신)
   PlayerActivity activity = PlayerActivity.offBall;
+
+  /// 볼 소유 시 남은 HP (압박당하면 깎임)
+  int holderHp = MatchSim.maxHolderHp;
+
+  static const double _jumpDuration = 0.5;
+  static const double _jumpHeight = 0.55; // 미터
+  double _jumpTime = 0;
+
+  /// 점프샷/블록 연출 (렌더 전용 — 시뮬에 영향 없음)
+  void jump() => _jumpTime = _jumpDuration;
+
+  @override
+  void update(double dt) {
+    if (_jumpTime > 0) {
+      _jumpTime = math.max(0, _jumpTime - dt);
+    }
+  }
+
+  double get _jumpOffsetY {
+    if (_jumpTime <= 0) {
+      return 0;
+    }
+    final t = 1 - _jumpTime / _jumpDuration;
+    return -math.sin(math.pi * t) *
+        _jumpHeight *
+        IsoProjection.heightScale;
+  }
 
   static const _bodyWidth = 14.0;
   static const _bodyHeight = 22.0;
@@ -55,6 +84,9 @@ class PlayerComponent extends PositionComponent {
         _ringPaint,
       );
     }
+    // 점프 중이면 몸만 떠오른다 (그림자·링은 바닥에 유지)
+    canvas.save();
+    canvas.translate(0, _jumpOffsetY);
     // 몸통 (바닥에서 위로)
     final body = RRect.fromRectAndRadius(
       Rect.fromCenter(
@@ -79,6 +111,27 @@ class PlayerComponent extends PositionComponent {
       anchor: Anchor.center,
     );
     _renderActivityBadge(canvas);
+    if (hasBall) {
+      _renderHpPips(canvas);
+    }
+    canvas.restore();
+  }
+
+  static final Paint _hpFullPaint = Paint()..color = const Color(0xFFFF5555);
+  static final Paint _hpEmptyPaint = Paint()
+    ..color = const Color(0x66000000);
+
+  /// 홀더 머리 위 HP 칸 (3칸, 압박당하면 줄어듦)
+  void _renderHpPips(Canvas canvas) {
+    final top = -_bodyHeight - _headRadius * 2 - 8.0;
+    for (var i = 0; i < MatchSim.maxHolderHp; i++) {
+      final rect = Rect.fromCenter(
+        center: Offset((i - 1) * 7.0, top),
+        width: 5,
+        height: 5,
+      );
+      canvas.drawRect(rect, i < holderHp ? _hpFullPaint : _hpEmptyPaint);
+    }
   }
 
   static final Paint _receiverPaint = Paint()

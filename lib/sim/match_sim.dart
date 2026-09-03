@@ -94,8 +94,18 @@ class MatchSim {
   double holdTime = 0;
   static const double minHoldBeforePass = 0.8;
 
+  /// 홀더 HP: 수비가 [pressureRadius] 안에 붙어 있으면 1초마다 1씩 깎이고
+  /// 0이 되면 그 수비수에게 스틸당한다. 공이 새 홀더에게 갈 때마다 초기화.
+  static const int maxHolderHp = 3;
+  static const double pressureRadius = 1.0;
+  int holderHp = maxHolderHp;
+  double _pressureTime = 0;
+
   /// 직전 패서 — 핑퐁 방지를 위해 바로 되돌려주는 패스는 금지
   int? lastPasserId;
+
+  /// 직전 슛의 슈터 (점프샷 연출용)
+  int? lastShooterId;
   int homeScore = 0;
   int awayScore = 0;
   int offenseChanges = 0;
@@ -149,6 +159,7 @@ class MatchSim {
       holdTime += dt;
       ball.pos.setFrom(holder!.pos);
       ball.z = 0;
+      _applyDefensivePressure(holder!);
     }
     if (ball.phase == BallPhase.loose) {
       _tryPickup();
@@ -237,11 +248,37 @@ class MatchSim {
     }
   }
 
+  /// 수비 압박: 붙어 있는 동안 1초마다 HP 1 감소, 0이면 스틸
+  void _applyDefensivePressure(SimPlayer h) {
+    final defender = _nearestOf(
+      teamOf(h.team == Team.home ? Team.away : Team.home),
+      h.pos,
+    );
+    if (defender.pos.distanceTo(h.pos) > pressureRadius) {
+      _pressureTime = 0;
+      return;
+    }
+    _pressureTime += dt;
+    if (_pressureTime < 1.0) {
+      return;
+    }
+    _pressureTime -= 1.0;
+    holderHp--;
+    if (holderHp > 0) {
+      lastEvent = 'pressure:$holderHp';
+      return;
+    }
+    _giveBallTo(defender);
+    lastEvent = 'steal:${defender.id}';
+  }
+
   void _giveBallTo(SimPlayer p) {
     ball.holderId = p.id;
     ball.receiverId = null;
     ball.looseFor = null;
     holdTime = 0;
+    holderHp = maxHolderHp;
+    _pressureTime = 0;
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
     ball.z = 0;
@@ -285,10 +322,10 @@ class MatchSim {
     if (holdTime < minHoldBeforePass) {
       return;
     }
-    // 압박 = 수비 기본 간격(1.2m)보다 실제로 더 붙었을 때만
-    if (pressure < 1.0 && _rng.nextDouble() < 0.08) {
+    // 압박당하면(HP 깎이는 중) 적극적으로 탈출 패스, 아니어도 종종 볼 순환
+    if (pressure < pressureRadius && _rng.nextDouble() < 0.15) {
       _pass(h);
-    } else if (_rng.nextDouble() < 0.012) {
+    } else if (_rng.nextDouble() < 0.025) {
       _pass(h);
     }
   }
@@ -302,6 +339,7 @@ class MatchSim {
     ball.shotWillScore = _rng.nextDouble() < shotMakeProb;
     ball.shotValue = dist > CourtDims.threeRadius ? 3 : 2;
     lastPasserId = null;
+    lastShooterId = h.id;
     ball.holderId = null;
     ball.phase = BallPhase.shot;
     lastEvent = 'shot:${ball.shotValue}';
@@ -428,7 +466,20 @@ class MatchSim {
               .clamp(1.0, CourtDims.width - 1.0),
         );
       }
-      return _anchorFor(p)..add(p.wander);
+      // 수비를 떨어뜨리는 방향으로 도망치며 오픈 만들기
+      final target = _anchorFor(p)..add(p.wander);
+      final defender = _nearestOf(
+        teamOf(p.team == Team.home ? Team.away : Team.home),
+        p.pos,
+      );
+      final defDist = defender.pos.distanceTo(p.pos);
+      if (defDist < 2.0) {
+        final escape = p.pos - defender.pos;
+        if (escape.length > 1e-6) {
+          target.add(escape.normalized()..scale(2.0 - defDist));
+        }
+      }
+      return target;
     }
     return _defenseTargetFor(p);
   }
@@ -450,7 +501,8 @@ class MatchSim {
     if (len < 1e-6) {
       return mark.pos.clone();
     }
-    final standOff = min(1.2, len * 0.3);
+    // 볼 핸들러를 마크 중이면 바짝 붙어 압박 (HP 깎기), 오프볼도 밀착 마크
+    final standOff = ball.holderId == mark.id ? 0.45 : 0.6;
     return mark.pos + toBasket.scaled(standOff / len);
   }
 

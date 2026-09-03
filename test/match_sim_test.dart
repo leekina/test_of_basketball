@@ -104,15 +104,31 @@ void main() {
     }
   });
 
-  test('패스와 슛 이벤트가 모두 발생한다', () {
-    final sim = MatchSim(seed: 42);
+  test('패스·슛·압박·스틸 이벤트가 모두 발생한다', () {
     final seen = <String>{};
-    for (var i = 0; i < 3000; i++) {
-      sim.tick();
-      if (sim.lastEvent != null) {
-        seen.add(sim.lastEvent!.split(':').first);
+    for (final seed in [1, 42, 777]) {
+      final sim = MatchSim(seed: seed);
+      for (var i = 0; i < 6000; i++) {
+        sim.tick();
+        if (sim.lastEvent != null) {
+          seen.add(sim.lastEvent!.split(':').first);
+        }
       }
     }
-    expect(seen, containsAll(['pass', 'shot']));
+    expect(seen, containsAll(['pass', 'shot', 'pressure', 'steal']));
+  });
+
+  test('스틸 직후 홀더 HP는 초기화된다', () {
+    for (final seed in [1, 42, 777]) {
+      final sim = MatchSim(seed: seed);
+      for (var i = 0; i < 6000; i++) {
+        sim.tick();
+        if (sim.lastEvent?.startsWith('steal') ?? false) {
+          expect(sim.holderHp, MatchSim.maxHolderHp,
+              reason: 'seed $seed tick $i');
+        }
+        expect(sim.holderHp, inInclusiveRange(0, MatchSim.maxHolderHp));
+      }
+    }
   });
 }
