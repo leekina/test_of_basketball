@@ -4,6 +4,7 @@ import 'package:flame/components.dart';
 
 import '../sim/match_sim.dart';
 import 'ball_component.dart';
+import 'hoop_component.dart';
 import 'iso_projection.dart';
 import 'player_component.dart';
 
@@ -47,6 +48,18 @@ class MatchLayer extends Component {
     add(_ballComp);
     _prevBall.setFrom(sim.ball.pos);
     _currBall.setFrom(sim.ball.pos);
+
+    // 골대 (양쪽) — 선수와 같은 깊이 정렬 공간에 둔다
+    for (final leftSide in [true, false]) {
+      final hoop = HoopComponent(iso: iso, leftSide: leftSide);
+      hoop.position = iso.courtToLocal(
+        hoop.floorAnchor.x,
+        hoop.floorAnchor.y,
+      );
+      hoop.priority =
+          iso.depthOf(hoop.floorAnchor.x, hoop.floorAnchor.y);
+      add(hoop);
+    }
   }
 
   @override
@@ -71,10 +84,7 @@ class MatchLayer extends Component {
       case PlayerState.dribbling:
         return '드리블';
       case PlayerState.windup:
-        final basket = sim.basketOf(sim.offense);
-        return p.pos.distanceTo(basket) <= MatchSim.layupRange
-            ? '레이업'
-            : '슛 준비';
+        return p.layupMotion ? '레이업!' : '슛 준비';
       case PlayerState.faking:
         return '페이크';
       case PlayerState.receiving:
@@ -91,6 +101,10 @@ class MatchLayer extends Component {
         return '블락!';
       case PlayerState.rebounding:
         return '리바운드!';
+      case PlayerState.bodyChecking:
+        return '박치기!';
+      case PlayerState.driving:
+        return '드라이브!';
       case PlayerState.idle:
         return '';
     }
@@ -121,12 +135,31 @@ class MatchLayer extends Component {
           1 - (p.stateTimer / MatchSim.blockDuration).clamp(0.0, 1.0),
         PlayerState.rebounding =>
           1 - (p.stateTimer / MatchSim.reboundJumpDuration).clamp(0.0, 1.0),
-        PlayerState.windup =>
-          1 - (p.stateTimer / MatchSim.windupDuration).clamp(0.0, 1.0),
+        PlayerState.windup => 1 -
+            (p.stateTimer /
+                    (p.layupMotion
+                        ? MatchSim.layupWindupDuration
+                        : MatchSim.windupDuration))
+                .clamp(0.0, 1.0),
         PlayerState.faking =>
           1 - (p.stateTimer / MatchSim.fakeDuration).clamp(0.0, 1.0),
         _ => -1.0,
       };
+      // 몸통박치기 런지: 공(홀더) 방향으로 짧게 들이받는 모션
+      if (p.state == PlayerState.bodyChecking) {
+        final progress =
+            1 - (p.stateTimer / MatchSim.bodyCheckDuration).clamp(0.0, 1.0);
+        final ballScreen =
+            iso.courtToLocal(sim.ball.pos.x, sim.ball.pos.y);
+        final dir = ballScreen - comp.position;
+        if (dir.length > 1e-6) {
+          dir.normalize();
+        }
+        comp.lungeProgress = progress;
+        comp.lungeDir.setFrom(dir);
+      } else {
+        comp.lungeProgress = -1;
+      }
       comp.showDefenseRange = p.state == PlayerState.defending;
       final h = sim.holder;
       comp.pressuring = p.state == PlayerState.defending &&
@@ -139,12 +172,28 @@ class MatchLayer extends Component {
     final bx = _lerp(_prevBall.x, _currBall.x, alpha);
     final by = _lerp(_prevBall.y, _currBall.y, alpha);
     var bz = _lerp(_prevBallZ, _currBallZ, alpha);
-    // 드리블 바운스는 연출 전용 (시뮬 z는 0)
+    var sideOffset = 0.0; // 크로스오버 드리블 좌우 흔들림 (화면 px)
+    // 홀더 연출: 슛 모션이면 공을 머리 위로, 드리블이면 바운스+좌우 이동
     if (sim.ball.phase == BallPhase.held) {
-      bz = 0.45 * math.sin(_renderClock * 9).abs();
+      final h = sim.holder;
+      if (h != null &&
+          (h.state == PlayerState.windup ||
+              h.state == PlayerState.faking)) {
+        // 드리블을 멈추고 공을 머리 위로 들어올린다 (점프에 맞춰 상승)
+        final duration = h.state == PlayerState.faking
+            ? MatchSim.fakeDuration
+            : h.layupMotion
+                ? MatchSim.layupWindupDuration
+                : MatchSim.windupDuration;
+        final progress = 1 - (h.stateTimer / duration).clamp(0.0, 1.0);
+        bz = 2.2 + math.sin(math.pi * progress) * 0.55;
+      } else {
+        bz = 0.45 * math.sin(_renderClock * 9).abs();
+        sideOffset = math.sin(_renderClock * 4.5) * 9;
+      }
     }
     _ballComp
-      ..position = iso.courtToLocal(bx, by)
+      ..position = iso.courtToLocal(bx, by)..x += sideOffset
       ..z = bz
       ..spinning = sim.ball.phase != BallPhase.held
       ..priority = iso.depthOf(bx, by) + 50;

@@ -107,6 +107,8 @@ enum PlayerState {
   defending,
   blocking,
   rebounding, // 리바운드 점프 (공중 볼 잡기)
+  bodyChecking, // 몸통박치기 (드리블러 접촉 시 HP 깎는 모션)
+  driving, // 림을 향한 드라이브 (1.1배 가속, 도착하면 레이업)
 }
 
 class SimPlayer {
@@ -133,12 +135,16 @@ class SimPlayer {
   PlayerState state = PlayerState.idle;
   double stateTimer = 0; // windup/faking/blocking 같은 시한부 상태의 남은 시간
   double fakeCooldown = 0; // 페이크 연속 사용 방지
+  double checkCooldown = 0; // 몸통박치기 쿨타임
+  double driveTime = 0; // 드라이브 잔여 시간 (홀더 전용)
+  bool layupMotion = false; // 현재 windup 이 레이업(활공)인가
 
   bool get inTimedState =>
       (state == PlayerState.windup ||
           state == PlayerState.faking ||
           state == PlayerState.blocking ||
-          state == PlayerState.rebounding) &&
+          state == PlayerState.rebounding ||
+          state == PlayerState.bodyChecking) &&
       stateTimer > 0;
 }
 
@@ -233,7 +239,18 @@ class MatchSim {
   static const int maxHolderHp = 3;
   static const double pressureRadius = 1.0;
   int holderHp = maxHolderHp;
-  double _pressureTime = 0;
+
+  // 몸통박치기 파라미터
+  static const double bodyCheckRadius = 0.75; // 접촉 판정 거리
+  static const double bodyCheckCooldown = 1.0; // 수비수별 쿨타임
+  static const double bodyCheckDuration = 0.35; // 박치기 모션/경직 시간
+
+  /// 더블팀: 홀더 근처(2.5m)에 수비수가 둘이면 확률적으로 두 번째
+  /// 수비수가 존을 버리고 협공에 가담한다
+  int? doubleTeamerId;
+  double _doubleTeamTime = 0;
+  static const double doubleTeamRadius = 2.5;
+  static const double doubleTeamDuration = 1.6;
 
   /// 진행 중인 슈팅 모션의 길이 (레이업이면 짧음) — 컨테스트 판정에 사용
   double _currentWindup = windupDuration;
@@ -269,6 +286,12 @@ class MatchSim {
       if (p.fakeCooldown > 0) {
         p.fakeCooldown -= dt;
       }
+      if (p.checkCooldown > 0) {
+        p.checkCooldown -= dt;
+      }
+      if (p.driveTime > 0) {
+        p.driveTime -= dt;
+      }
       if (!p.inTimedState) {
         continue;
       }
@@ -298,6 +321,8 @@ class MatchSim {
           p.state = PlayerState.idle;
         case PlayerState.rebounding:
           p.state = PlayerState.idle;
+        case PlayerState.bodyChecking:
+          p.state = PlayerState.idle;
         default:
           break;
       }
@@ -316,8 +341,12 @@ class MatchSim {
 
   PlayerState _derivedState(SimPlayer p) {
     if (ball.holderId == p.id) {
+      if (p.driveTime > 0) {
+        return PlayerState.driving;
+      }
       return PlayerState.dribbling;
     }
+    p.driveTime = 0; // 공을 놓으면 드라이브 해제
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
       return PlayerState.receiving;
     }
@@ -394,18 +423,23 @@ class MatchSim {
     _updateTimedStates();
     _deriveStates();
     _tryBlockReactions();
+    _updateDoubleTeam();
     _movePlayers();
 
     final h = holder;
-    if (h != null && h.state == PlayerState.dribbling) {
+    if (h != null &&
+        (h.state == PlayerState.dribbling ||
+            h.state == PlayerState.driving)) {
       _handlerDecision(h);
     }
-    // 이동 후 소유 중이면 공은 핸들러 위치에
+    // 박치기(넉백 포함) 처리 후, 여전히 소유 중이면 공은 핸들러 위치에
     if (ball.phase == BallPhase.held && holder != null) {
       holdTime += dt;
-      ball.pos.setFrom(holder!.pos);
-      ball.z = 0;
       _applyDefensivePressure(holder!);
+      if (ball.phase == BallPhase.held && holder != null) {
+        ball.pos.setFrom(holder!.pos);
+        ball.z = 0;
+      }
     }
     if (ball.phase == BallPhase.loose) {
       _tryPickup();
@@ -583,47 +617,76 @@ class MatchSim {
     }
   }
 
-  /// 수비 압박: 홀더가 드리블 중 + '수비중' 상태의 수비수가 붙어 있는 동안
-  /// 1초마다 HP 1 감소, 0이면 스틸
+  /// 더블팀 판단: 홀더 근처에 수비수 둘 → 확률적으로 협공 개시.
+  /// 협공 중인 수비수는 존을 버리고 홀더를 직접 압박한다.
+  void _updateDoubleTeam() {
+    final h = holder;
+    // 진행 중인 더블팀 유지/해제
+    if (doubleTeamerId != null) {
+      _doubleTeamTime -= dt;
+      if (_doubleTeamTime <= 0 || h == null) {
+        doubleTeamerId = null;
+      }
+      return;
+    }
+    if (h == null || h.pos.distanceTo(basketOf(offense)) > 10) {
+      return;
+    }
+    final near = teamOf(h.team == Team.home ? Team.away : Team.home)
+        .where(
+          (d) =>
+              d.state == PlayerState.defending &&
+              d.pos.distanceTo(h.pos) < doubleTeamRadius,
+        )
+        .toList()
+      ..sort(
+        (a, b) =>
+            a.pos.distanceTo(h.pos).compareTo(b.pos.distanceTo(h.pos)),
+      );
+    if (near.length >= 2 && _rng.nextDouble() < 0.06) {
+      doubleTeamerId = near[1].id; // 두 번째로 가까운 수비수가 협공
+      _doubleTeamTime = doubleTeamDuration;
+      lastEvent = 'doubleteam:${near[1].id}';
+    }
+  }
+
+  /// 몸통박치기: 수비수가 드리블러와 닿으면(0.75m) 박치기 모션과 함께
+  /// HP 1을 깎고 홀더를 살짝 밀어낸다. 수비수별 쿨타임 1초.
+  /// HP 0이 되는 박치기는 그대로 스틸.
   void _applyDefensivePressure(SimPlayer h) {
-    if (h.state != PlayerState.dribbling) {
-      _pressureTime = 0;
+    // 드리블/드라이브 중에만 박치기 대상 (슈팅 모션 등은 제외)
+    if (h.state != PlayerState.dribbling &&
+        h.state != PlayerState.driving) {
       return;
     }
-    // HP 압박은 공격 존(골대 10m 이내)에서만 — 볼 운반 구간에서는
-    // 붙어는 있어도 HP를 깎지 않는다 (운반 중 즉사 방지)
+    // 박치기는 공격 존(골대 10m 이내)에서만 — 운반 구간 보호
     if (h.pos.distanceTo(basketOf(offense)) > 10) {
-      _pressureTime = 0;
       return;
     }
-    SimPlayer? defender;
-    var defenderDist = double.infinity;
     for (final d in teamOf(h.team == Team.home ? Team.away : Team.home)) {
-      if (d.state != PlayerState.defending) {
+      if (d.state != PlayerState.defending ||
+          d.checkCooldown > 0 ||
+          d.pos.distanceTo(h.pos) > bodyCheckRadius) {
         continue;
       }
-      final dist = d.pos.distanceTo(h.pos);
-      if (dist < defenderDist) {
-        defenderDist = dist;
-        defender = d;
+      // 박치기 성립
+      d.checkCooldown = bodyCheckCooldown;
+      d.state = PlayerState.bodyChecking;
+      d.stateTimer = bodyCheckDuration;
+      holderHp--;
+      // 넉백: 홀더가 반대 방향으로 살짝 밀려난다
+      final push = h.pos - d.pos;
+      if (push.length > 1e-6) {
+        h.pos.setFrom(_clampToCourt(h.pos + push.normalized().scaled(0.35)));
       }
+      if (holderHp <= 0) {
+        _giveBallTo(d);
+        lastEvent = 'steal:${d.id}';
+      } else {
+        lastEvent = 'bodycheck:${d.id}:$holderHp';
+      }
+      return; // 틱당 한 명만
     }
-    if (defender == null || defenderDist > pressureRadius) {
-      _pressureTime = 0;
-      return;
-    }
-    _pressureTime += dt;
-    if (_pressureTime < 1.0) {
-      return;
-    }
-    _pressureTime -= 1.0;
-    holderHp--;
-    if (holderHp > 0) {
-      lastEvent = 'pressure:$holderHp';
-      return;
-    }
-    _giveBallTo(defender);
-    lastEvent = 'steal:${defender.id}';
   }
 
   void _giveBallTo(SimPlayer p) {
@@ -632,7 +695,7 @@ class MatchSim {
     ball.looseFor = null;
     holdTime = 0;
     holderHp = maxHolderHp;
-    _pressureTime = 0;
+    doubleTeamerId = null; // 홀더가 바뀌면 협공 해제
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
     ball.z = 0;
@@ -669,6 +732,14 @@ class MatchSim {
       _startWindup(h, distToBasket);
       return;
     }
+    // 드라이브 중: 림에 도달하면 레이업, 아니면 계속 질주
+    if (h.state == PlayerState.driving) {
+      if (distToBasket <= layupRange) {
+        h.driveTime = 0;
+        _startWindup(h, distToBasket);
+      }
+      return;
+    }
     // HP 마지막 칸: 골밑 근처면 뺏기느니 쏜다 (필사 슛).
     // 샷클락도 얼마 없으면 거리 불문 던진다.
     if (holderHp <= 1 &&
@@ -682,6 +753,14 @@ class MatchSim {
     if (distToBasket <= layupRange &&
         _rng.nextDouble() < profile.layupChance) {
       _startWindup(h, distToBasket);
+      return;
+    }
+    // 드라이빙: 3점 라인 안이면 확률적으로 림을 향해 가속 돌파
+    if (distToBasket < CourtDims.threeRadius &&
+        distToBasket > layupRange &&
+        _rng.nextDouble() < 0.05) {
+      h.driveTime = 2.2;
+      lastEvent = 'drive:${h.id}';
       return;
     }
     // 드라이브&킥: 수비가 2명 이상 붙으면 오픈 동료에게 킥아웃
@@ -719,6 +798,24 @@ class MatchSim {
     if (holdTime < minHoldBeforePass) {
       return;
     }
+    // 오픈 찬스가 난 동료(수비 2.2m 밖 + 사거리 안)에게 적극적으로 피드
+    final defendersList =
+        teamOf(offense == Team.home ? Team.away : Team.home).toList();
+    final hasOpenMate = teamOf(offense).any((m) {
+      if (m.id == h.id || m.id == lastPasserId) {
+        return false;
+      }
+      if (m.pos.distanceTo(basket) >= shootRange) {
+        return false;
+      }
+      final nearestToMate =
+          defendersList.map((d) => d.pos.distanceTo(m.pos)).reduce(min);
+      return nearestToMate >= 2.2;
+    });
+    if (hasOpenMate && _rng.nextDouble() < 0.3) {
+      _pass(h);
+      return;
+    }
     // 압박당하면(HP 깎이는 중) 적극적으로 탈출 패스, 아니어도 종종 볼 순환.
     // PG 는 배급 역할이라 더 자주 돌리고, HP 가 깎일수록 급해진다.
     final hpUrgency = 1.0 + (maxHolderHp - holderHp) * 0.8;
@@ -732,11 +829,11 @@ class MatchSim {
     }
   }
 
-  /// 슈팅 준비 모션 시작 (레이업은 더 짧은 모션)
+  /// 슈팅 준비 모션 시작 (레이업은 짧은 모션 + 림으로 활공)
   void _startWindup(SimPlayer h, double distToBasket) {
-    _currentWindup = distToBasket <= layupRange
-        ? layupWindupDuration
-        : windupDuration;
+    h.layupMotion = distToBasket <= layupRange;
+    _currentWindup =
+        h.layupMotion ? layupWindupDuration : windupDuration;
     h.state = PlayerState.windup;
     h.stateTimer = _currentWindup;
     lastEvent = 'windup:${h.id}';
@@ -999,10 +1096,12 @@ class MatchSim {
       final delta = target - p.pos;
       final distance = delta.length;
       if (distance > 1e-6) {
-        // 볼 소유자는 드리블 때문에 80% 속도로 이동
-        final speed = ball.holderId == p.id
-            ? playerSpeed * dribbleSpeedFactor
-            : playerSpeed;
+        // 볼 소유자는 드리블 때문에 80% 속도, 드라이브 중엔 110% 가속
+        final speed = p.state == PlayerState.driving
+            ? playerSpeed * 1.1
+            : ball.holderId == p.id
+                ? playerSpeed * dribbleSpeedFactor
+                : playerSpeed;
         final step = min(distance, speed * dt);
         p.pos.add(delta..scale(step / distance));
       }
@@ -1012,9 +1111,17 @@ class MatchSim {
   }
 
   Vector2 _targetFor(SimPlayer p) {
-    // 슈팅 모션/페이크/블락 점프 중에는 제자리
+    // 슈팅 모션/페이크/블락 점프 중에는 제자리.
+    // 단 레이업 모션은 림으로 계속 활공한다 (러닝 레이업)
     if (p.inTimedState) {
+      if (p.state == PlayerState.windup && p.layupMotion) {
+        return basketOf(offense);
+      }
       return p.pos.clone();
+    }
+    // 드라이브 중인 홀더: 림으로 직진 (가속은 _movePlayers 에서)
+    if (p.state == PlayerState.driving && ball.holderId == p.id) {
+      return basketOf(offense);
     }
     // 패스 받을 사람은 캐치 지점으로
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
@@ -1206,6 +1313,17 @@ class MatchSim {
   /// 존에 들어온 공격수(볼 홀더 최우선)는 존 안에서 맨투맨처럼 따라붙는다.
   Vector2 _defenseTargetFor(SimPlayer p) {
     final basket = basketOf(offense);
+    // 더블팀 가담자: 존을 버리고 홀더를 직접 압박
+    if (p.id == doubleTeamerId && holder != null) {
+      final h = holder!;
+      final toBasket = basket - h.pos;
+      if (toBasket.length > 1e-6) {
+        return _clampToCourt(
+          h.pos + toBasket.normalized().scaled(0.6),
+        );
+      }
+      return h.pos.clone();
+    }
     final zoneCenter = _zoneAnchorFor(p);
 
     SimPlayer? mark;

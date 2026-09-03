@@ -129,8 +129,12 @@ void main() {
         'windup',
         'fake',
         'block',
-        'pressure',
+        'bodycheck',
         'intercept',
+        'steal',
+        'drive',
+        'doubleteam',
+        'rebound',
       ]),
     );
   });

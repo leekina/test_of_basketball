@@ -35,6 +35,10 @@ class PlayerComponent extends PositionComponent {
   /// 블락 점프 진행도 0..1 (블락 중이 아니면 음수) — 시뮬 상태 기반
   double blockProgress = -1;
 
+  /// 몸통박치기 런지 진행도 0..1 (아니면 음수) + 화면 방향
+  double lungeProgress = -1;
+  final Vector2 lungeDir = Vector2.zero();
+
   /// 수비 범위(압박 반경) 표시 여부 — 수비중 상태일 때
   bool showDefenseRange = false;
 
@@ -144,7 +148,15 @@ class PlayerComponent extends PositionComponent {
     }
     // 점프 중이면 몸만 떠오른다 (그림자·링·라벨은 바닥에 유지)
     canvas.save();
-    canvas.translate(0, _jumpOffsetY);
+    // 몸통박치기: 대상 방향으로 짧게 들이받는 런지
+    var lungeX = 0.0;
+    var lungeY = 0.0;
+    if (lungeProgress >= 0) {
+      final amount = math.sin(math.pi * lungeProgress) * 8;
+      lungeX = lungeDir.x * amount;
+      lungeY = lungeDir.y * amount;
+    }
+    canvas.translate(lungeX, _jumpOffsetY + lungeY);
     // 몸통 (바닥에서 위로)
     final body = RRect.fromRectAndRadius(
       Rect.fromCenter(
