@@ -182,6 +182,7 @@ class MatchSim {
   static const double dt = 0.1;
 
   static const double playerSpeed = 2.8;
+  static const double dribbleSpeedFactor = 0.8; // 볼 소유 시 이동속도 배율
   static const double passSpeed = 7.0;
   static const double shotSpeed = 6.0;
   static const double shootRange = 7.4; // 윙/탑 3점까지 사거리
@@ -425,9 +426,18 @@ class MatchSim {
         ? _lerpDouble(1.8, CourtDims.rimHeight, u)
         : 1.2;
     ball.z = baseZ + 4 * ball.arcPeak * u * (1 - u);
+    // 리시버가 마중 나와 조기 캐치 — 수비가 레인에 닿기 전에 받는다
+    if (ball.phase == BallPhase.pass && u < 1.0 && ball.z < 2.2) {
+      final receiver = players[ball.receiverId!];
+      if (receiver.pos.distanceTo(ball.pos) <= 0.8) {
+        _giveBallTo(receiver);
+        return;
+      }
+    }
     // 패스 인터셉트: 공이 수비수 몸(0.45m)과 겹치면 50% 확률로 스틸
-    // (수비수당 비행마다 1회만 판정)
-    if (ball.phase == BallPhase.pass && u < 1.0) {
+    // (수비수당 비행마다 1회만 판정). 점프 리치보다 높이 나는 로브는
+    // 몸에 닿지 않으므로 스틸 불가.
+    if (ball.phase == BallPhase.pass && u < 1.0 && ball.z < 2.2) {
       final defense = offense == Team.home ? Team.away : Team.home;
       for (final d in teamOf(defense)) {
         if (ball.interceptTried.contains(d.id) ||
@@ -772,6 +782,12 @@ class MatchSim {
       if (mate.id == lastPasserId) {
         continue;
       }
+      // 아웃렛(빅맨 운반 → 가드) 패스인가 — 머리 위로 넘기는 패스라
+      // 오픈 요구치를 완화한다
+      final isGuardOutlet =
+          h.position.index >= CourtPosition.smallForward.index &&
+              h.pos.distanceTo(basket) > 9 &&
+              mate.position.index <= CourtPosition.shootingGuard.index;
       // 패스 레인 중간에 수비수 몸이 걸리면 인터셉트 위험 — 그 레인은 버린다.
       // 패서 바로 옆(t<=0.15) 수비수는 릴리즈로 제칠 수 있으므로 제외.
       var laneRisky = false;
@@ -799,7 +815,9 @@ class MatchSim {
       // 롱패스일수록 수비가 궤적에 뛰어들 시간이 길다 —
       // 패스 거리에 비례한 분리(오픈) 요구치를 못 넘기면 그 패스는 버린다
       final passDist = h.pos.distanceTo(mate.pos);
-      if (openness < 0.75 + 0.11 * passDist) {
+      final requiredOpenness =
+          (0.75 + 0.11 * passDist) * (isGuardOutlet ? 0.8 : 1.0);
+      if (openness < requiredOpenness) {
         continue;
       }
       // 오픈 정도 우선 + 골대에 가까울수록 약간 가산.
@@ -813,10 +831,21 @@ class MatchSim {
           profileOf(mate).crashesBoards && mate.pos.distanceTo(basket) < 5
               ? 1.2
               : 0.0;
+      // 백도어: 림으로 컷 중인 동료에게 찔러주면 레이업으로 직결
+      final backdoorBonus = mate.cutTime > 0 ? 1.5 : 0.0;
+      // 빅맨이 운반 중이면 올라와 준 가드에게 넘긴다 (아웃렛)
+      final guardOutletBonus =
+          h.position.index >= CourtPosition.smallForward.index &&
+                  h.pos.distanceTo(basket) > 9 &&
+                  mate.position.index <= CourtPosition.shootingGuard.index
+              ? 2.0
+              : 0.0;
       final score = openness -
           mate.pos.distanceTo(basket) * 0.15 +
           pgCarryBonus +
-          postEntryBonus;
+          postEntryBonus +
+          backdoorBonus +
+          guardOutletBonus;
       if (score > bestScore) {
         bestScore = score;
         best = mate;
@@ -835,7 +864,11 @@ class MatchSim {
     ball.to.setFrom(target);
     ball.flightTime = 0;
     ball.flightDuration = max(0.4, h.pos.distanceTo(target) / passSpeed);
-    ball.arcPeak = 0.5;
+    // 빅맨 아웃렛은 수비 머리 위로 넘기는 로브 패스 (높은 궤적)
+    final lob = h.position.index >= CourtPosition.smallForward.index &&
+        h.pos.distanceTo(basket) > 9 &&
+        best.position.index <= CourtPosition.shootingGuard.index;
+    ball.arcPeak = lob ? 1.2 : 0.5;
     ball.receiverId = best.id;
     ball.interceptTried.clear();
     lastPasserId = h.id;
@@ -953,7 +986,11 @@ class MatchSim {
       final delta = target - p.pos;
       final distance = delta.length;
       if (distance > 1e-6) {
-        final step = min(distance, playerSpeed * dt);
+        // 볼 소유자는 드리블 때문에 80% 속도로 이동
+        final speed = ball.holderId == p.id
+            ? playerSpeed * dribbleSpeedFactor
+            : playerSpeed;
+        final step = min(distance, speed * dt);
         p.pos.add(delta..scale(step / distance));
       }
       _separate(p);
@@ -1010,8 +1047,9 @@ class MatchSim {
           p.pos,
         );
         final toDefender = defender.pos - p.pos;
-        // HP 마지막 칸이면 리트리트 드리블로 스틸 회피 시도
-        if (holderHp <= 1 &&
+        // 드리블이 느려(80%) 정면 돌파가 어렵다 — HP가 깎이기 시작하면
+        // 일찍 물러나서 볼 무브먼트로 풀어간다 (리트리트 드리블)
+        if (holderHp <= 2 &&
             toDefender.length < 1.3 &&
             toDefender.length > 1e-6) {
           return _clampToCourt(p.pos - toDefender.normalized().scaled(2.5));
@@ -1032,6 +1070,20 @@ class MatchSim {
           return _clampToCourt(p.pos + dir.scaled(1.2) + perp.scaled(1.6));
         }
         return basket;
+      }
+      // 빅맨(비가드)이 볼을 "운반 중"(아직 공격 진영 밖)이면
+      // 가드는 탑으로 올라가 받아준다 — 세트 오펜스 진입 후엔 평소 무브
+      final h = holder;
+      if (h != null &&
+          h.team == p.team &&
+          h.position.index >= CourtPosition.smallForward.index &&
+          h.pos.distanceTo(basketOf(offense)) > 9 &&
+          p.position.index <= CourtPosition.shootingGuard.index) {
+        // 받으러 올라가되 배회/저크는 유지해 마크를 떨어뜨린다
+        final anchor = _anchorFor(p);
+        return _clampToCourt(
+          anchor + (h.pos - anchor) * 0.3 + p.wander,
+        );
       }
       if (p.cutTime > 0) {
         // 골밑 컷: 림 방향으로 파고들기 (선수마다 살짝 다른 각도)
