@@ -103,6 +103,7 @@ enum PlayerState {
   chasing,
   defending,
   blocking,
+  rebounding, // 리바운드 점프 (공중 볼 잡기)
 }
 
 class SimPlayer {
@@ -133,7 +134,8 @@ class SimPlayer {
   bool get inTimedState =>
       (state == PlayerState.windup ||
           state == PlayerState.faking ||
-          state == PlayerState.blocking) &&
+          state == PlayerState.blocking ||
+          state == PlayerState.rebounding) &&
       stateTimer > 0;
 }
 
@@ -290,6 +292,8 @@ class MatchSim {
           }
         case PlayerState.blocking:
           p.state = PlayerState.idle;
+        case PlayerState.rebounding:
+          p.state = PlayerState.idle;
         default:
           break;
       }
@@ -382,6 +386,7 @@ class MatchSim {
     shotClock = max(0, shotClock - dt);
 
     _updateBallFlight();
+    _updateLooseAir();
     _updateTimedStates();
     _deriveStates();
     _tryBlockReactions();
@@ -470,30 +475,93 @@ class MatchSim {
       lastEvent = 'miss';
       final angle = _rng.nextDouble() * 2 * pi;
       final dist = 1.0 + _rng.nextDouble() * 2.0;
+      final rim = ball.to.clone();
       final spot = ball.to + Vector2(cos(angle), sin(angle)) * dist;
-      _dropLooseAt(spot);
+      // 림에서 튕겨 공중으로 — 낙하 동안 리바운드 점프 경쟁이 벌어진다
+      _dropLooseAt(spot, bounceFrom: rim);
     }
   }
 
-  void _dropLooseAt(Vector2 spot, {Team? forTeam}) {
+  void _dropLooseAt(Vector2 spot, {Team? forTeam, Vector2? bounceFrom}) {
     ball.phase = BallPhase.loose;
     ball.holderId = null;
     ball.receiverId = null;
     ball.looseFor = forTeam;
+    if (bounceFrom != null) {
+      // 림 높이에서 리바운드 지점으로 포물선 낙하 (0.55초)
+      ball.from.setFrom(bounceFrom);
+      ball.to.setFrom(_clampToCourt(spot));
+      ball.flightTime = 0;
+      ball.flightDuration = 0.55;
+      ball.pos.setFrom(bounceFrom);
+      ball.z = CourtDims.rimHeight;
+      return;
+    }
+    ball.flightTime = 0;
+    ball.flightDuration = 0;
     ball.pos.setFrom(_clampToCourt(spot));
     ball.z = 0;
   }
 
+  /// 루즈볼이 아직 공중에 떠 있는가 (림 리바운드 낙하 중)
+  bool get looseAirborne =>
+      ball.phase == BallPhase.loose && ball.z > 0.05;
+
+  /// 리바운드 낙하 진행 — 림에서 튕긴 공이 포물선으로 떨어진다
+  void _updateLooseAir() {
+    if (ball.phase != BallPhase.loose ||
+        ball.flightTime >= ball.flightDuration) {
+      return;
+    }
+    ball.flightTime += dt;
+    final u = min(1.0, ball.flightTime / ball.flightDuration);
+    ball.pos
+      ..setFrom(ball.to)
+      ..sub(ball.from)
+      ..scale(u)
+      ..add(ball.from);
+    ball.z = (1 - u) * CourtDims.rimHeight + sin(pi * u) * 0.4;
+    if (u >= 1.0) {
+      ball.z = 0;
+    }
+  }
+
+  /// 점프해서 공을 잡을 수 있는 최대 높이
+  static const double reboundReach = 2.5;
+
+  /// 리바운드 점프 지속 시간 (렌더 점프 곡선과 공유)
+  static const double reboundJumpDuration = 0.5;
+
   void _tryPickup() {
+    // 너무 높이 떠 있으면 아직 아무도 못 잡는다
+    if (ball.z > reboundReach) {
+      return;
+    }
+    final airborne = ball.z > 0.3;
     final candidates =
         ball.looseFor == null ? players : teamOf(ball.looseFor!).toList();
     final nearest = _nearestOf(candidates, ball.pos);
-    if (nearest.pos.distanceTo(ball.pos) > pickupRadius) {
+    final grabRadius = airborne ? 0.9 : pickupRadius;
+    if (nearest.pos.distanceTo(ball.pos) > grabRadius) {
       return;
+    }
+    if (airborne) {
+      // 리바운드 점프로 공중에서 낚아챈다 — 착지 동안 잠깐 멈춘다
+      nearest.state = PlayerState.rebounding;
+      nearest.stateTimer = reboundJumpDuration;
+      // 경합하던 근처 선수들도 같이 뛰어오른다
+      for (final other in players) {
+        if (other.id != nearest.id &&
+            !other.inTimedState &&
+            other.pos.distanceTo(ball.pos) < 1.3) {
+          other.state = PlayerState.rebounding;
+          other.stateTimer = reboundJumpDuration;
+        }
+      }
     }
     final wasOffense = offense;
     _giveBallTo(nearest);
-    lastEvent = 'pickup:${nearest.id}';
+    lastEvent = airborne ? 'rebound:${nearest.id}' : 'pickup:${nearest.id}';
     if (nearest.team != wasOffense) {
       _switchOffense(to: nearest.team);
       lastEvent = 'turnover';
@@ -631,11 +699,14 @@ class MatchSim {
       return;
     }
     // 압박당하면(HP 깎이는 중) 적극적으로 탈출 패스, 아니어도 종종 볼 순환.
-    // PG 는 배급 역할이라 더 자주 돌린다.
+    // PG 는 배급 역할이라 더 자주 돌리고, HP 가 깎일수록 급해진다.
+    final hpUrgency = 1.0 + (maxHolderHp - holderHp) * 0.8;
     if (pressure < pressureRadius &&
-        _rng.nextDouble() < (0.35 * profile.passMul).clamp(0.0, 0.9)) {
+        _rng.nextDouble() <
+            (0.4 * profile.passMul * hpUrgency).clamp(0.0, 0.95)) {
       _pass(h);
-    } else if (_rng.nextDouble() < 0.025 * profile.passMul) {
+    } else if (_rng.nextDouble() <
+        (0.05 * profile.passMul * hpUrgency).clamp(0.0, 0.5)) {
       _pass(h);
     }
   }
@@ -728,7 +799,7 @@ class MatchSim {
       // 롱패스일수록 수비가 궤적에 뛰어들 시간이 길다 —
       // 패스 거리에 비례한 분리(오픈) 요구치를 못 넘기면 그 패스는 버린다
       final passDist = h.pos.distanceTo(mate.pos);
-      if (openness < 0.8 + 0.12 * passDist) {
+      if (openness < 0.75 + 0.11 * passDist) {
         continue;
       }
       // 오픈 정도 우선 + 골대에 가까울수록 약간 가산.
@@ -899,15 +970,18 @@ class MatchSim {
     if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
       return ball.to.clone();
     }
-    // 루즈볼: 리바운드 가중치(PF/C 우선)로 뽑힌 선수가 공으로
+    // 루즈볼: 리바운드 가중치(PF/C 우선)로 뽑힌 선수가 공으로.
+    // 공중에 떠 있으면 낙하 지점으로 미리 달려간다
     if (ball.phase == BallPhase.loose &&
         (ball.looseFor == null || ball.looseFor == p.team)) {
       if (_looseChaserOf(p.team).id == p.id) {
-        return ball.pos.clone();
+        return looseAirborne ? ball.to.clone() : ball.pos.clone();
       }
     }
-    // 슛이 뜨면 PF/C 는 양팀 모두 림으로 리바운드 진입 (박스아웃 자리)
-    if (ball.phase == BallPhase.shot && profileOf(p).crashesBoards) {
+    // 슛이 뜨거나 리바운드가 공중에 있으면 PF/C 는 양팀 모두
+    // 림으로 리바운드 진입 (박스아웃 자리)
+    if ((ball.phase == BallPhase.shot || looseAirborne) &&
+        profileOf(p).crashesBoards) {
       final rim = basketOf(offense);
       final toCenter = rim.x < CourtDims.length / 2 ? 1.0 : -1.0;
       final side = p.position == CourtPosition.center ? 1.0 : -1.0;

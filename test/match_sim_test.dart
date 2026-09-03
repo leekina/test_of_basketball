@@ -170,6 +170,28 @@ void main() {
             'SG ${avg(CourtPosition.shootingGuard)}');
   });
 
+  test('리바운드: 미스 후 공이 공중에 떴다가 점프로 잡힌다', () {
+    final sim = MatchSim(seed: 42);
+    var sawAirborneLoose = false;
+    var sawReboundGrab = false;
+    var sawReboundingState = false;
+    for (var i = 0; i < 6000; i++) {
+      sim.tick();
+      if (sim.looseAirborne && sim.ball.z > 1.0) {
+        sawAirborneLoose = true;
+      }
+      if (sim.lastEvent?.startsWith('rebound:') ?? false) {
+        sawReboundGrab = true;
+      }
+      if (sim.players.any((p) => p.state == PlayerState.rebounding)) {
+        sawReboundingState = true;
+      }
+    }
+    expect(sawAirborneLoose, isTrue, reason: '공중 리바운드 낙하 없음');
+    expect(sawReboundGrab, isTrue, reason: '점프 캐치 없음');
+    expect(sawReboundingState, isTrue, reason: 'rebounding 상태 없음');
+  });
+
   test('스틸 직후 홀더 HP는 초기화된다', () {
     for (final seed in [1, 42, 777]) {
       final sim = MatchSim(seed: seed);

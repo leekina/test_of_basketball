@@ -102,6 +102,8 @@ class MatchLayer extends Component {
         return '수비';
       case PlayerState.blocking:
         return '블락!';
+      case PlayerState.rebounding:
+        return '리바운드!';
       case PlayerState.idle:
         return '';
     }
@@ -125,9 +127,13 @@ class MatchLayer extends Component {
       comp.hasBall = sim.ball.holderId == p.id;
       comp.holderHp = sim.holderHp;
       comp.stateLabel = _labelFor(p);
-      comp.blockProgress = p.state == PlayerState.blocking
-          ? 1 - (p.stateTimer / MatchSim.blockDuration).clamp(0.0, 1.0)
-          : -1;
+      comp.blockProgress = switch (p.state) {
+        PlayerState.blocking =>
+          1 - (p.stateTimer / MatchSim.blockDuration).clamp(0.0, 1.0),
+        PlayerState.rebounding =>
+          1 - (p.stateTimer / MatchSim.reboundJumpDuration).clamp(0.0, 1.0),
+        _ => -1.0,
+      };
       comp.showDefenseRange = p.state == PlayerState.defending;
       final h = sim.holder;
       comp.pressuring = p.state == PlayerState.defending &&
