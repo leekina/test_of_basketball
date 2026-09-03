@@ -18,6 +18,9 @@ enum Team { home, away }
 
 enum BallPhase { held, pass, shot, loose }
 
+/// 선수가 지금 무엇을 하는지 (연출/디버그 표시용)
+enum PlayerActivity { handler, receiver, cutting, chasing, offBall, defending }
+
 class SimPlayer {
   SimPlayer(this.id, this.team, double x, double y) : pos = Vector2(x, y);
 
@@ -54,10 +57,17 @@ class SimBall {
 
 class MatchSim {
   MatchSim({int seed = 42}) : _rng = Random(seed) {
+    // 주의: players[i].id == i 불변식을 코드 전체가 의존한다 (holder 조회 등)
     for (var i = 0; i < 5; i++) {
       players.add(SimPlayer(i, Team.home, 10 + 2.0 * i, 2.5 + 2.5 * i));
+    }
+    for (var i = 0; i < 5; i++) {
       players.add(SimPlayer(5 + i, Team.away, 18 - 2.0 * i, 2.5 + 2.5 * i));
     }
+    assert(
+      players.every((p) => players[p.id] == p),
+      'players 리스트는 index == id 여야 한다',
+    );
     _giveBallTo(players[0]);
   }
 
@@ -79,6 +89,13 @@ class MatchSim {
 
   Team offense = Team.home;
   double shotClock = shotClockMax;
+
+  /// 현재 홀더가 공을 잡은 뒤 경과 시간 — 이만큼은 패스하지 않고 버틴다
+  double holdTime = 0;
+  static const double minHoldBeforePass = 0.8;
+
+  /// 직전 패서 — 핑퐁 방지를 위해 바로 되돌려주는 패스는 금지
+  int? lastPasserId;
   int homeScore = 0;
   int awayScore = 0;
   int offenseChanges = 0;
@@ -97,6 +114,25 @@ class MatchSim {
 
   Iterable<SimPlayer> teamOf(Team t) => players.where((p) => p.team == t);
 
+  /// 선수의 현재 행동 상태 (_targetFor와 같은 우선순위)
+  PlayerActivity activityOf(SimPlayer p) {
+    if (ball.holderId == p.id) {
+      return PlayerActivity.handler;
+    }
+    if (ball.phase == BallPhase.pass && ball.receiverId == p.id) {
+      return PlayerActivity.receiver;
+    }
+    if (ball.phase == BallPhase.loose &&
+        (ball.looseFor == null || ball.looseFor == p.team) &&
+        _nearestOf(teamOf(p.team), ball.pos).id == p.id) {
+      return PlayerActivity.chasing;
+    }
+    if (p.team == offense) {
+      return p.cutTime > 0 ? PlayerActivity.cutting : PlayerActivity.offBall;
+    }
+    return PlayerActivity.defending;
+  }
+
   void tick() {
     lastEvent = null;
     shotClock = max(0, shotClock - dt);
@@ -110,6 +146,7 @@ class MatchSim {
     }
     // 이동 후 소유 중이면 공은 핸들러 위치에
     if (ball.phase == BallPhase.held && holder != null) {
+      holdTime += dt;
       ball.pos.setFrom(holder!.pos);
       ball.z = 0;
     }
@@ -204,6 +241,7 @@ class MatchSim {
     ball.holderId = p.id;
     ball.receiverId = null;
     ball.looseFor = null;
+    holdTime = 0;
     ball.phase = BallPhase.held;
     ball.pos.setFrom(p.pos);
     ball.z = 0;
@@ -221,6 +259,7 @@ class MatchSim {
     offense = next;
     offenseChanges++;
     shotClock = shotClockMax;
+    lastPasserId = null;
   }
 
   // ---------------- 핸들러 판단 ----------------
@@ -236,11 +275,20 @@ class MatchSim {
 
     if (shotClock <= 0.3) {
       _shoot(h, basket, distToBasket);
-    } else if (distToBasket < shootRange && _rng.nextDouble() < 0.08) {
+      return;
+    }
+    if (distToBasket < shootRange && _rng.nextDouble() < 0.08) {
       _shoot(h, basket, distToBasket);
-    } else if (pressure < 1.3 && _rng.nextDouble() < 0.08) {
+      return;
+    }
+    // 잡은 직후에는 패스하지 않는다 (핑퐁 방지)
+    if (holdTime < minHoldBeforePass) {
+      return;
+    }
+    // 압박 = 수비 기본 간격(1.2m)보다 실제로 더 붙었을 때만
+    if (pressure < 1.0 && _rng.nextDouble() < 0.08) {
       _pass(h);
-    } else if (_rng.nextDouble() < 0.008) {
+    } else if (_rng.nextDouble() < 0.012) {
       _pass(h);
     }
   }
@@ -253,6 +301,7 @@ class MatchSim {
     ball.arcPeak = 1.0 + dist * 0.15;
     ball.shotWillScore = _rng.nextDouble() < shotMakeProb;
     ball.shotValue = dist > CourtDims.threeRadius ? 3 : 2;
+    lastPasserId = null;
     ball.holderId = null;
     ball.phase = BallPhase.shot;
     lastEvent = 'shot:${ball.shotValue}';
@@ -266,6 +315,10 @@ class MatchSim {
     var bestScore = double.negativeInfinity;
     for (final mate in teamOf(offense)) {
       if (mate.id == h.id) {
+        continue;
+      }
+      // 방금 나에게 패스한 선수에게 곧장 되돌려주지 않는다
+      if (mate.id == lastPasserId) {
         continue;
       }
       final openness = defenders
@@ -288,6 +341,7 @@ class MatchSim {
         max(0.4, h.pos.distanceTo(best.pos) / passSpeed);
     ball.arcPeak = 0.5;
     ball.receiverId = best.id;
+    lastPasserId = h.id;
     ball.holderId = null;
     ball.phase = BallPhase.pass;
     lastEvent = 'pass:${best.id}';

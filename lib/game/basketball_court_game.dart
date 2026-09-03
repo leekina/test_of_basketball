@@ -60,6 +60,21 @@ class BasketballCourtGame extends FlameGame {
       position: Vector2(viewWidth / 2, 8),
     );
     camera.viewport.add(_scoreText);
+
+    camera.viewport.add(
+      TextComponent(
+        text: '노란 링: 볼 소유  ● 패스 대상  ▲ 골밑 컷  ◆ 루즈볼 추적',
+        textRenderer: TextPaint(
+          style: const TextStyle(
+            fontSize: 11,
+            color: Color(0xCCFFFFFF),
+            shadows: [Shadow(color: Color(0xAA000000), blurRadius: 3)],
+          ),
+        ),
+        anchor: Anchor.bottomLeft,
+        position: Vector2(8, viewHeight - 6),
+      ),
+    );
   }
 
   @override

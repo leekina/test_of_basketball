@@ -17,6 +17,9 @@ class PlayerComponent extends PositionComponent {
   /// 현재 볼 소유자 표시용 링
   bool hasBall = false;
 
+  /// 행동 상태 배지 (MatchLayer가 매 프레임 갱신)
+  PlayerActivity activity = PlayerActivity.offBall;
+
   static const _bodyWidth = 14.0;
   static const _bodyHeight = 22.0;
   static const _headRadius = 6.0;
@@ -75,5 +78,39 @@ class PlayerComponent extends PositionComponent {
       Vector2(0, -_bodyHeight / 2 - 2),
       anchor: Anchor.center,
     );
+    _renderActivityBadge(canvas);
+  }
+
+  static final Paint _receiverPaint = Paint()
+    ..color = const Color(0xFFFF9F1C);
+  static final Paint _cuttingPaint = Paint()..color = const Color(0xFF4CD964);
+  static final Paint _chasingPaint = Paint()..color = const Color(0xFFC96BFF);
+
+  /// 머리 위 상태 배지: ● 리시버(주황) ▲ 컷(초록) ◆ 루즈볼 추적(보라)
+  void _renderActivityBadge(Canvas canvas) {
+    final top = -_bodyHeight - _headRadius * 2 - 7.0;
+    switch (activity) {
+      case PlayerActivity.receiver:
+        canvas.drawCircle(Offset(0, top), 3.5, _receiverPaint);
+      case PlayerActivity.cutting:
+        final path = Path()
+          ..moveTo(0, top - 4)
+          ..lineTo(4, top + 3)
+          ..lineTo(-4, top + 3)
+          ..close();
+        canvas.drawPath(path, _cuttingPaint);
+      case PlayerActivity.chasing:
+        final path = Path()
+          ..moveTo(0, top - 4)
+          ..lineTo(4, top)
+          ..lineTo(0, top + 4)
+          ..lineTo(-4, top)
+          ..close();
+        canvas.drawPath(path, _chasingPaint);
+      case PlayerActivity.handler:
+      case PlayerActivity.offBall:
+      case PlayerActivity.defending:
+        break; // 핸들러는 노란 링으로 이미 표시, 나머지는 배지 없음
+    }
   }
 }

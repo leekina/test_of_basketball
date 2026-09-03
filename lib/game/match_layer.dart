@@ -76,6 +76,7 @@ class MatchLayer extends Component {
       comp.position = iso.courtToLocal(x, y);
       comp.priority = iso.depthOf(x, y);
       comp.hasBall = sim.ball.holderId == sim.players[i].id;
+      comp.activity = sim.activityOf(sim.players[i]);
     }
 
     final bx = _lerp(_prevBall.x, _currBall.x, alpha);

@@ -31,6 +31,11 @@ void main() {
       if (sim.ball.holderId != null) {
         expect(sim.ball.holderId, inInclusiveRange(0, 9));
         expect(sim.ball.phase, BallPhase.held);
+        // 공은 홀더(id 일치) 위치에 있어야 한다 (인덱스/id 혼동 회귀 방지)
+        final holderPlayer =
+            sim.players.firstWhere((p) => p.id == sim.ball.holderId);
+        expect(sim.ball.pos.distanceTo(holderPlayer.pos), lessThan(0.001),
+            reason: 'tick $i: 공이 홀더가 아닌 곳에 있음');
       }
       expect(sim.shotClock, lessThanOrEqualTo(MatchSim.shotClockMax + 0.001),
           reason: 'tick $i shot clock');
@@ -61,6 +66,41 @@ void main() {
     for (var j = 0; j < 10; j++) {
       expect(moved[j], greaterThan(20),
           reason: '선수 $j가 60초 동안 ${moved[j].toStringAsFixed(1)}m만 이동');
+    }
+  });
+
+  test('핑퐁 패스 금지: 직전 패서에게 즉시 리턴 없음, 패스 간격 보장', () {
+    for (final seed in [1, 42, 777]) {
+      final sim = MatchSim(seed: seed);
+      int? lastPassTick;
+      int? lastPasser;
+      for (var i = 0; i < 6000; i++) {
+        final holderBefore = sim.ball.holderId;
+        sim.tick();
+        final e = sim.lastEvent;
+        if (e == null) {
+          continue;
+        }
+        // 슛/공수 전환이 끼면 시뮬도 리턴 금지를 리셋한다
+        if (e.startsWith('shot') || e.startsWith('score') || e == 'turnover') {
+          lastPasser = null;
+          continue;
+        }
+        if (!e.startsWith('pass:')) {
+          continue;
+        }
+        final receiver = int.parse(e.split(':')[1]);
+        if (lastPasser != null) {
+          expect(receiver, isNot(lastPasser),
+              reason: 'seed $seed tick $i: 직전 패서에게 즉시 리턴 패스');
+        }
+        if (lastPassTick != null) {
+          expect(i - lastPassTick, greaterThanOrEqualTo(10),
+              reason: 'seed $seed tick $i: 패스 간격이 너무 짧음');
+        }
+        lastPasser = holderBefore;
+        lastPassTick = i;
+      }
     }
   });
 
