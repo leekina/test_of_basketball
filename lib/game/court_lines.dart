@@ -5,20 +5,15 @@ import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
 
 import 'court_spec.dart';
+import 'iso_projection.dart';
 
 /// 코트 라인(경계·센터 서클·페인트존·3점 라인·림)을
 /// 바닥 좌표(미터) → 아이소메트릭 투영으로 그린다.
-///
-/// 투영 기저는 부모 [IsometricTileMapComponent]의 블록 중심 좌표에서
-/// 직접 추출하므로 타일 크기가 바뀌어도 항상 타일맵과 정렬된다.
 class CourtLinesComponent extends Component {
-  CourtLinesComponent({required this.map});
+  CourtLinesComponent({required this.iso});
 
-  final IsometricTileMapComponent map;
+  final IsoProjection iso;
 
-  late final Vector2 _origin;
-  late final Vector2 _ex;
-  late final Vector2 _ey;
   late final Path _linePath;
 
   final Paint _linePaint = Paint()
@@ -30,19 +25,10 @@ class CourtLinesComponent extends Component {
 
   @override
   Future<void> onLoad() async {
-    final c00 = map.getBlockCenterPosition(Block(0, 0));
-    _origin = c00.clone();
-    _ex = map.getBlockCenterPosition(Block(1, 0)) - c00;
-    _ey = map.getBlockCenterPosition(Block(0, 1)) - c00;
     _linePath = _buildPath();
   }
 
-  /// 코트 바닥 좌표(미터, 코트 좌상단 코너 원점) → 맵 로컬 좌표
-  Vector2 courtToLocal(double x, double y) {
-    final tx = CourtSpec.courtOrigin.x + x;
-    final ty = CourtSpec.courtOrigin.y + y;
-    return _origin + _ex * tx + _ey * ty;
-  }
+  Vector2 courtToLocal(double x, double y) => iso.courtToLocal(x, y);
 
   @override
   void render(Canvas canvas) {
