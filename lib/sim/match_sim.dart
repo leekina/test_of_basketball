@@ -128,6 +128,7 @@ class SimPlayer {
   double wanderTimer = 0; // 배회 지점 재추첨까지 남은 시간
   double cutTime = 0; // 골밑 컷 진행 중 남은 시간
   double cutCooldown = 0; // 다음 컷까지 남은 시간
+  double holdStillTime = 0; // 오프볼 "자리잡고 서 있기" 잔여 시간
 
   // 수비 반응 지연: 마크의 위치를 주기적으로만 인식한다 (설계 문서 §3-3)
   final Vector2 perceivedMarkPos = Vector2.zero();
@@ -1372,7 +1373,11 @@ class MatchSim {
       final offBallOffense = p.team == offense && ball.holderId != p.id;
       if (!offBallOffense) {
         p.cutTime = 0;
+        p.holdStillTime = 0;
         continue;
+      }
+      if (p.holdStillTime > 0) {
+        p.holdStillTime -= dt;
       }
       // 앵커 주변 배회 지점을 주기적으로 재추첨 (주기·컷은 포지션 성향)
       final profile = profileOf(p);
@@ -1381,9 +1386,23 @@ class MatchSim {
         p.wanderTimer = profile.wanderIntervalMin +
             _rng.nextDouble() *
                 (profile.wanderIntervalMax - profile.wanderIntervalMin);
-        final angle = _rng.nextDouble() * 2 * pi;
-        final radius = 0.5 + _rng.nextDouble() * 1.8;
-        p.wander.setValues(cos(angle) * radius, sin(angle) * radius);
+        // 스페이싱이 충분하고(동료 2.5m 밖) 수비도 여유 있으면
+        // 절반은 새 지점으로 가는 대신 그 자리에 서서 기다린다
+        final wellSpaced = !teamOf(p.team).any(
+          (m) => m.id != p.id && m.pos.distanceTo(p.pos) < 2.5,
+        );
+        final defenderNear = _nearestOf(
+              teamOf(p.team == Team.home ? Team.away : Team.home),
+              p.pos,
+            ).pos.distanceTo(p.pos) <
+            1.2;
+        if (wellSpaced && !defenderNear && _rng.nextDouble() < 0.5) {
+          p.holdStillTime = 1.0 + _rng.nextDouble() * 1.5;
+        } else {
+          final angle = _rng.nextDouble() * 2 * pi;
+          final radius = 0.5 + _rng.nextDouble() * 1.8;
+          p.wander.setValues(cos(angle) * radius, sin(angle) * radius);
+        }
       }
       // V-컷 저크: 밀착 마크당하면 즉시 급격한 방향 전환으로 분리 창출
       // (수비는 0.4초 반응 지연이 있어 이 순간 오픈이 된다)
@@ -1392,6 +1411,7 @@ class MatchSim {
         p.pos,
       );
       if (closestDef.pos.distanceTo(p.pos) < 0.9 && p.wanderTimer > 0.6) {
+        p.holdStillTime = 0; // 밀착당하면 대기 해제 후 저크
         p.wanderTimer = 0.5 + _rng.nextDouble() * 0.6;
         final angle = _rng.nextDouble() * 2 * pi;
         final radius = 2.0 + _rng.nextDouble() * 2.0;
@@ -1405,6 +1425,7 @@ class MatchSim {
         if (p.cutCooldown <= 0 && _rng.nextDouble() < profile.cutChance) {
           p.cutTime = 1.6;
           p.cutCooldown = 4 + _rng.nextDouble() * 5;
+          p.holdStillTime = 0; // 컷이 뜨면 대기 해제
         }
       }
     }
@@ -1622,6 +1643,10 @@ class MatchSim {
           (basket.y + (p.id % 5 - 2) * 1.2)
               .clamp(1.0, CourtDims.width - 1.0),
         );
+      }
+      // 자리잡고 서 있기: 스페이싱이 좋을 때는 움직이지 않는다
+      if (p.holdStillTime > 0) {
+        return p.pos.clone();
       }
       // 수비를 떨어뜨리는 방향으로 도망치며 오픈 만들기
       final target = _anchorFor(p)..add(p.wander);

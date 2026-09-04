@@ -98,6 +98,12 @@ class MatchLayer extends Component {
     if (p.id == sim.inboundReceiverId) {
       return '받을 준비';
     }
+    // 오프볼 자리잡기: 스페이싱 좋을 때 서서 기다리는 중
+    if (p.team == sim.offense &&
+        p.holdStillTime > 0 &&
+        p.state == PlayerState.moving) {
+      return '자리잡기';
+    }
     // 리바운드 상황의 빅맨: 수비는 박스아웃, 공격은 진입
     if ((sim.ball.phase == BallPhase.shot ||
             (sim.looseAirborne && sim.inbounderId == null)) &&
