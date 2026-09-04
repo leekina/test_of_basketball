@@ -98,6 +98,13 @@ class MatchLayer extends Component {
     if (p.id == sim.inboundReceiverId) {
       return '받을 준비';
     }
+    // 리바운드 상황의 빅맨: 수비는 박스아웃, 공격은 진입
+    if ((sim.ball.phase == BallPhase.shot ||
+            (sim.looseAirborne && sim.inbounderId == null)) &&
+        sim.profileOf(p).crashesBoards &&
+        !p.inTimedState) {
+      return p.team == sim.offense ? '리바운드 진입' : '박스아웃!';
+    }
     switch (p.state) {
       case PlayerState.dribbling:
         return '드리블';

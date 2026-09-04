@@ -1469,16 +1469,45 @@ class MatchSim {
         return looseAirborne ? ball.to.clone() : ball.pos.clone();
       }
     }
-    // 슛이 뜨거나 리바운드가 공중에 있으면 PF/C 는 양팀 모두
-    // 림으로 리바운드 진입 (박스아웃 자리)
+    // 슛이 뜨거나 리바운드가 공중에 있으면 PF/C 는 림으로 리바운드 진입.
+    // 수비 빅맨은 안쪽 자리를 선점하고(박스아웃) 공격 빅맨은 바깥에서
+    // 밀고 들어온다 — 몸 충돌 때문에 안쪽을 차지한 쪽이 유리하다.
     if ((ball.phase == BallPhase.shot ||
             (looseAirborne && inbounderId == null)) &&
         profileOf(p).crashesBoards) {
       final rim = basketOf(offense);
       final toCenter = rim.x < CourtDims.length / 2 ? 1.0 : -1.0;
       final side = p.position == CourtPosition.center ? 1.0 : -1.0;
+      if (p.team != offense) {
+        // 박스아웃: 가장 가까운 공격 크래셔와 림 사이를 몸으로 막는다
+        SimPlayer? attacker;
+        var best = double.infinity;
+        for (final o in teamOf(offense)) {
+          if (!profileOf(o).crashesBoards) {
+            continue;
+          }
+          final d = o.pos.distanceTo(p.pos);
+          if (d < best) {
+            best = d;
+            attacker = o;
+          }
+        }
+        if (attacker != null && attacker.pos.distanceTo(rim) < 6) {
+          final dir = attacker.pos - rim;
+          if (dir.length > 1e-6) {
+            final standDist = max(0.9, dir.length - 0.8);
+            return _clampToCourt(
+              rim + dir.normalized().scaled(standDist),
+            );
+          }
+        }
+        return _clampToCourt(
+          Vector2(rim.x + toCenter * 1.0, rim.y + side * 1.0),
+        );
+      }
+      // 공격 리바운드 진입: 박스아웃 바깥 링에서 밀고 들어간다
       return _clampToCourt(
-        Vector2(rim.x + toCenter * 1.4, rim.y + side * 1.2),
+        Vector2(rim.x + toCenter * 2.4, rim.y + side * 1.4),
       );
     }
     // 패스 비행 중, 리시버 근처의 수비수는 공 궤적 위로 뛰어들어
