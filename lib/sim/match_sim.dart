@@ -273,7 +273,7 @@ class MatchSim {
   static const double doubleTeamDuration = 1.6;
 
   // 스턴: 스크린 충돌 / 리바운드 경합 패배 / 스틸·블락 피해 시 1초 고정
-  static const double stunDuration = 1.0;
+  static const double stunDuration = 2.0;
   static const double stunImmunityDuration = 2.0;
 
   // 스크린 플레이 (픽앤롤 / 핀다운)
