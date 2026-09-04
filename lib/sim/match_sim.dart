@@ -205,10 +205,10 @@ class MatchSim {
   /// 시뮬레이션 틱 간격 (초) — 10 tick/s
   static const double dt = 0.1;
 
-  static const double playerSpeed = 2.8;
+  static const double playerSpeed = 2.6;
   static const double dribbleSpeedFactor = 0.8; // 볼 소유 시 이동속도 배율
   static const double passSpeed = 7.0;
-  static const double shotSpeed = 6.0;
+  static const double shotSpeed = 5.0;
   static const double shootRange = 7.4; // 윙/탑 3점까지 사거리
   static const double shotClockMax = 14.0;
   static const double catchRadius = 1.2;
@@ -217,8 +217,8 @@ class MatchSim {
   static const double shotReleaseHeight = 1.8; // 슛 릴리즈 높이
 
   // 슛/레이업/블락 상호작용 (공 물리와 무관한 판정 파라미터)
-  static const double windupDuration = 0.5; // 슈팅 준비 유지 시간
-  static const double layupWindupDuration = 0.3;
+  static const double windupDuration = 0.7; // 슈팅 준비 유지 시간
+  static const double layupWindupDuration = 0.45;
   static const double fakeDuration = 0.4;
   static const double blockDuration = 1.0; // 블락 점프 전체 시간
   static const double blockRadius = 1.5; // 블락 반응 거리
@@ -266,6 +266,9 @@ class MatchSim {
   /// 수비수가 존을 버리고 협공에 가담한다
   int? doubleTeamerId;
   double _doubleTeamTime = 0;
+
+  /// 현재 doubleTeamerId 가 협공(더블팀)이 아니라 헬프 디펜스인가
+  bool doubleTeamIsHelp = false;
   static const double doubleTeamRadius = 2.5;
   static const double doubleTeamDuration = 1.6;
 
@@ -436,9 +439,10 @@ class MatchSim {
         nearest = d;
       }
     }
+    // 0.7 배: 슈팅 모션이 길어진 만큼(0.5→0.7초) 틱당 확률을 정규화
     if (nearest != null &&
         nearestDist < blockRadius &&
-        _rng.nextDouble() < profileOf(nearest).blockProb) {
+        _rng.nextDouble() < profileOf(nearest).blockProb * 0.7) {
       nearest.state = PlayerState.blocking;
       nearest.stateTimer = blockDuration;
       lastEvent = 'block:${nearest.id}';
@@ -891,6 +895,7 @@ class MatchSim {
       );
     if (near.length >= 2 && _rng.nextDouble() < 0.06) {
       doubleTeamerId = near[1].id; // 두 번째로 가까운 수비수가 협공
+      doubleTeamIsHelp = false;
       _doubleTeamTime = doubleTeamDuration;
       lastEvent = 'doubleteam:${near[1].id}';
       return;
@@ -904,6 +909,7 @@ class MatchSim {
       if (defenders.isNotEmpty) {
         final helper = _nearestOf(defenders, h.pos);
         doubleTeamerId = helper.id;
+        doubleTeamIsHelp = true;
         _doubleTeamTime = 1.2;
         lastEvent = 'help:${helper.id}';
       }
@@ -1164,7 +1170,7 @@ class MatchSim {
     ball.from.setFrom(h.pos);
     ball.to.setFrom(basket);
     ball.flightTime = 0;
-    ball.flightDuration = max(0.9, dist / shotSpeed);
+    ball.flightDuration = max(1.0, dist / shotSpeed);
     ball.arcPeak = 1.0 + dist * 0.15;
     ball.shotWillScore =
         _rng.nextDouble() < makeProb(dist, contested: contested);

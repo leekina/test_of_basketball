@@ -78,8 +78,26 @@ class MatchLayer extends Component {
     _applyInterpolated(alpha);
   }
 
-  /// 발밑 상태 라벨 (한국어)
+  /// 발밑 상태 라벨 (한국어) — 역할 배정(협공/헬프/클로즈아웃/스크린 이동/
+  /// 인바운드)이 있으면 그것을 우선 표시한다
   String _labelFor(SimPlayer p) {
+    if (p.state == PlayerState.defending) {
+      if (p.id == sim.doubleTeamerId) {
+        return sim.doubleTeamIsHelp ? '헬프!' : '협공!';
+      }
+      if (p.id == sim.closeoutId) {
+        return '클로즈아웃!';
+      }
+    }
+    if (p.id == sim.screenerId && !sim.screenSet && !p.inTimedState) {
+      return '스크린 가는중';
+    }
+    if (p.id == sim.inbounderId) {
+      return '인바운드';
+    }
+    if (p.id == sim.inboundReceiverId) {
+      return '받을 준비';
+    }
     switch (p.state) {
       case PlayerState.dribbling:
         return '드리블';
